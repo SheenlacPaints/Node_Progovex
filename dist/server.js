@@ -122,12 +122,6 @@ console.log(`  - Port: ${process.env.MSSQL_PORT || '1433'}`);
 console.log(`  - Database: ${process.env.MSSQL_DATABASE || 'TASKENGINE'}`);
 console.log(`  - User: ${process.env.MSSQL_USER || 'sa'}`);
 console.log(`  - Password: ${process.env.MSSQL_PASSWORD ? '***SET***' : 'NOT SET'}`);
-console.log('\nMySQL (Optional):');
-console.log(`  - Host: ${process.env.MYSQL_HOST || 'localhost'}`);
-console.log(`  - Port: ${process.env.MYSQL_PORT || '3306'}`);
-console.log(`  - Database: ${process.env.MYSQL_DATABASE || 'social_platform'}`);
-console.log(`  - User: ${process.env.MYSQL_USER || 'root'}`);
-console.log(`  - Password: ${process.env.MYSQL_PASSWORD ? '***SET***' : 'NOT SET'}`);
 // ==============================================
 // MIDDLEWARE
 // ==============================================
@@ -202,14 +196,6 @@ app.get('/health', async (req, res) => {
         status.services['sql_server'] = 'disconnected';
         status.status = 'degraded';
     }
-    // Check MySQL (optional)
-    try {
-        await database_1.mysqlPool.query('SELECT 1');
-        status.services['mysql'] = 'connected';
-    }
-    catch (error) {
-        status.services['mysql'] = 'disconnected (optional)';
-    }
     res.json(status);
 });
 // Socket.IO health check endpoint
@@ -255,15 +241,6 @@ app.use(errorHandler_1.errorHandler);
     console.error('❌ SQL Server connection failed:', err.message);
     console.warn('⚠️ Continuing with limited functionality...');
 });
-// Connect to MySQL (optional)
-database_1.mysqlPool.getConnection()
-    .then(connection => {
-    console.log('✅ MySQL connected successfully');
-    connection.release();
-})
-    .catch(err => {
-    console.warn('⚠️ MySQL connection failed (optional):', err.message);
-});
 // Connect to MongoDB (optional)
 (0, database_1.connectMongoDB)().catch(console.error);
 // ==============================================
@@ -296,14 +273,6 @@ const gracefulShutdown = async () => {
     }
     catch (error) {
         console.warn('⚠️ Error closing SQL Server connection:', error);
-    }
-    // Close MySQL connection
-    try {
-        await database_1.mysqlPool.end();
-        console.log('✅ MySQL connection closed');
-    }
-    catch (error) {
-        console.warn('⚠️ Error closing MySQL connection:', error);
     }
     // Close MongoDB connection
     try {
