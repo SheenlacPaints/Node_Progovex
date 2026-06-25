@@ -1,5 +1,3 @@
-// backend/src/config/database.ts
-import mysql from 'mysql2/promise';
 import mongoose from 'mongoose';
 import winston from 'winston';
 import dotenv from 'dotenv';
@@ -56,22 +54,6 @@ export const testSQLServerConnection = async (): Promise<boolean> => {
         return false;
     }
 };
-
-// ==============================================
-// MYSQL CONNECTION POOL (Optional - for other features)
-// ==============================================
-export const mysqlPool = mysql.createPool({
-    host: process.env.MYSQL_HOST || 'localhost',
-    port: parseInt(process.env.MYSQL_PORT || '3306'),
-    user: process.env.MYSQL_USER || 'root',
-    password: process.env.MYSQL_PASSWORD || '',
-    database: process.env.MYSQL_DATABASE || 'social_platform',
-    waitForConnections: true,
-    connectionLimit: 10,
-    queueLimit: 0,
-    enableKeepAlive: true,
-    keepAliveInitialDelay: 0
-});
 
 // ==============================================
 // MONGODB CONNECTION (optional)

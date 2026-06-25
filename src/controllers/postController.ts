@@ -964,7 +964,8 @@ export const getReactions = async (req: AuthRequest, res: Response) => {
                 SELECT r.type, COUNT(*) as count 
                 FROM nt_reactions r
                 WHERE r.post_id = @postId
-                GROUP BY r.type            `);
+                GROUP BY r.type
+            `);
 
         res.json({ success: true, reactions: result.recordset });
     } catch (error) {
@@ -1222,13 +1223,16 @@ export const reportPost = async (req: AuthRequest, res: Response) => {
 // GET TRENDING HASHTAGS
 // ==============================================
 export const getTrendingHashtags = async (req: AuthRequest, res: Response) => {
-    let period = 'day';
     try {
-        const queryPeriod = (req.query as any).period;
-        if (queryPeriod) period = queryPeriod;
+        const period = (req.query as any).period || 'day';
         const pool = await getSQLServerPool();
 
+        let days = 1;
+        if (period === 'week') days = 7;
+        if (period === 'month') days = 30;
+
         const result = await pool.request()
+            .input('days', sql.Int, days)
             .query(`
                 SELECT 
                     h.name,
@@ -1236,7 +1240,7 @@ export const getTrendingHashtags = async (req: AuthRequest, res: Response) => {
                 FROM nt_hashtags h
                 LEFT JOIN nt_post_hashtags ph ON h.id = ph.hashtag_id
                 LEFT JOIN nt_posts p ON ph.post_id = p.id
-                WHERE p.created_at >= DATEADD(DAY, -1, GETDATE()) OR p.created_at IS NULL
+                WHERE p.created_at >= DATEADD(DAY, -@days, GETDATE()) OR p.created_at IS NULL
                 GROUP BY h.id, h.name
                 ORDER BY post_count DESC
             `);
@@ -1251,7 +1255,7 @@ export const getTrendingHashtags = async (req: AuthRequest, res: Response) => {
         res.json({
             success: true,
             trending: [],
-            period
+            period: 'day'
         });
     }
 };
@@ -1528,7 +1532,10 @@ export const resharePost = async (req: AuthRequest, res: Response) => {
 
         const originalPost = originalPostResult.recordset[0];
 
-        const reshareContent = comment || `Reshared a post by @${originalPost.cuser_name || 'user'}`;
+        // Get user name for the reshare message
+        const username = originalPost.cuser_name || 'user';
+
+        const reshareContent = comment || `Reshared a post by @${username}`;
 
         const insertResult = await pool.request()
             .input('userId', sql.Int, userId)
@@ -1581,8 +1588,8 @@ export const resharePost = async (req: AuthRequest, res: Response) => {
                 id: originalPost.id,
                 content: originalPost.content,
                 cuserid: originalPost.cuserid,
-                username: originalPost.cuser_name,
-                full_name: originalPost.cuser_name,
+                username: originalPost.cuser_name || 'unknown',
+                full_name: originalPost.cuser_name || 'Unknown User',
                 mediaUrls: JSON.parse(originalPost.media_urls || '[]')
             }
         };

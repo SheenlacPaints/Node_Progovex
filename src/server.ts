@@ -11,7 +11,7 @@ import compression from 'compression';
 import path from 'path';
 
 // Import configurations
-import { mysqlPool, connectMongoDB, getSQLServerPool, testSQLServerConnection } from './config/database';
+import { connectMongoDB, getSQLServerPool, testSQLServerConnection } from './config/database';
 import { errorHandler } from './middleware/errorHandler';
 import { apiLimiter } from './middleware/rateLimiter';
 
@@ -136,13 +136,6 @@ console.log(`  - Database: ${process.env.MSSQL_DATABASE || 'TASKENGINE'}`);
 console.log(`  - User: ${process.env.MSSQL_USER || 'sa'}`);
 console.log(`  - Password: ${process.env.MSSQL_PASSWORD ? '***SET***' : 'NOT SET'}`);
 
-console.log('\nMySQL (Optional):');
-console.log(`  - Host: ${process.env.MYSQL_HOST || 'localhost'}`);
-console.log(`  - Port: ${process.env.MYSQL_PORT || '3306'}`);
-console.log(`  - Database: ${process.env.MYSQL_DATABASE || 'social_platform'}`);
-console.log(`  - User: ${process.env.MYSQL_USER || 'root'}`);
-console.log(`  - Password: ${process.env.MYSQL_PASSWORD ? '***SET***' : 'NOT SET'}`);
-
 // ==============================================
 // MIDDLEWARE
 // ==============================================
@@ -232,14 +225,6 @@ app.get('/health', async (req, res) => {
         status.status = 'degraded';
     }
 
-    // Check MySQL (optional)
-    try {
-        await mysqlPool.query('SELECT 1');
-        status.services['mysql'] = 'connected';
-    } catch (error) {
-        status.services['mysql'] = 'disconnected (optional)';
-    }
-
     res.json(status);
 });
 
@@ -292,16 +277,6 @@ getSQLServerPool()
         console.warn('⚠️ Continuing with limited functionality...');
     });
 
-// Connect to MySQL (optional)
-mysqlPool.getConnection()
-    .then(connection => {
-        console.log('✅ MySQL connected successfully');
-        connection.release();
-    })
-    .catch(err => {
-        console.warn('⚠️ MySQL connection failed (optional):', err.message);
-    });
-
 // Connect to MongoDB (optional)
 connectMongoDB().catch(console.error);
 
@@ -339,14 +314,6 @@ const gracefulShutdown = async () => {
         console.log('✅ SQL Server connection closed');
     } catch (error) {
         console.warn('⚠️ Error closing SQL Server connection:', error);
-    }
-
-    // Close MySQL connection
-    try {
-        await mysqlPool.end();
-        console.log('✅ MySQL connection closed');
-    } catch (error) {
-        console.warn('⚠️ Error closing MySQL connection:', error);
     }
 
     // Close MongoDB connection
