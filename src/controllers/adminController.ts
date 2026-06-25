@@ -16,7 +16,7 @@ export const getPendingPosts = async (req: AuthRequest, res: Response) => {
 
     // OPTION 1: Use query() instead of execute() - Simpler and works better with LIMIT/OFFSET
     const query = `
-            SELECT p.*, u.username, u.full_name, u.cemail 
+            SELECT p.*, u.cuser_name as username, u.cuser_name as full_name, u.cemail 
             FROM nt_posts p
             JOIN users u ON p.cuserid = u.cuserid
             WHERE p.approval_status = 'waiting' AND p.status = 'pending'
@@ -67,7 +67,7 @@ export const getPendingPostsExecute = async (req: AuthRequest, res: Response) =>
 
     // For execute(), we need to use ? placeholders and pass an array
     const sql = `
-            SELECT p.*, u.username, u.full_name, u.cemail 
+            SELECT p.*, u.cuser_name as username, u.cuser_name as full_name, u.cemail 
             FROM nt_posts p
             JOIN users u ON p.cuserid = u.id
             WHERE p.approval_status = 'waiting' AND p.status = 'pending'
@@ -116,7 +116,7 @@ export const getAllPostsForAdmin = async (req: AuthRequest, res: Response) => {
     const approvalStatus = req.query.approval_status as string || 'all';
 
     let sql = `
-            SELECT p.*, u.username, u.full_name, u.cemail 
+            SELECT p.*, u.cuser_name as username, u.cuser_name as full_name, u.cemail 
             FROM nt_posts p
             JOIN users u ON p.cuserid = u.id
             WHERE 1=1
@@ -204,7 +204,7 @@ export const approvePost = async (req: AuthRequest, res: Response) => {
     const [posts] = await mysqlPool.query(
       `SELECT 
                 p.*, 
-                u.username, u.full_name, u.avatar_url, u.cemail,
+                u.cuser_name as username, u.cuser_name as full_name, u.cprofile_image_name as avatar_url, u.cemail,
                 DATE_FORMAT(p.created_at, '%Y-%m-%d %H:%i:%s') as created_at_formatted,
                 DATE_FORMAT(p.approved_at, '%Y-%m-%d %H:%i:%s') as approved_at_formatted
              FROM nt_posts p
@@ -414,7 +414,7 @@ export const getAllUsers = async (req: AuthRequest, res: Response) => {
   const { page = 1, limit = 20, role, is_active } = req.query;
   const offset = (Number(page) - 1) * Number(limit);
 
-  let query = 'SELECT id, username, cemail, full_name, role, is_active, email_verified, created_at FROM users WHERE 1=1';
+  let query = 'SELECT id, cuser_name as username, cemail,cuser_name as full_name, cprofile_image_name as avatar_url, role, is_active, email_verified, created_at FROM users WHERE 1=1';
   const params: any[] = [];
 
   if (role) {
@@ -574,7 +574,7 @@ export const getActivityLogs = async (req: AuthRequest, res: Response) => {
 export const getReportedPosts = async (req: AuthRequest, res: Response) => {
   const [reports] = await mysqlPool.execute(
     `SELECT r.*, p.content, p.cuserid as post_owner_id, 
-     u.username as reporter_username, u2.username as post_owner_username
+     u.cuser_name as reporter_username, u2.cuser_name as post_owner_username
      FROM nt_reports r
      JOIN nt_posts p ON r.post_id = p.id
      JOIN users u ON r.cuserid = u.id
@@ -637,7 +637,7 @@ export const getAnalytics = async (req: AuthRequest, res: Response) => {
   );
 
   const [topContributors] = await mysqlPool.execute(
-    `SELECT u.username, COUNT(p.id) as post_count 
+    `SELECT u.cuser_name as username, COUNT(p.id) as post_count 
      FROM users u
      JOIN nt_posts p ON u.id = p.cuserid
      WHERE p.created_at >= DATE_SUB(NOW(), INTERVAL 30 DAY)
@@ -660,7 +660,7 @@ export const getAnalytics = async (req: AuthRequest, res: Response) => {
 export const sendAnnouncement = async (req: AuthRequest, res: Response) => {
   const { title, message, audience = 'all' } = req.body;
 
-  let userQuery = 'SELECT cemail, username FROM users WHERE is_active = true';
+  let userQuery = 'SELECT cemail, cuser_name as username FROM users WHERE is_active = true';
   if (audience === 'active') {
     userQuery += ' AND created_at >= DATE_SUB(NOW(), INTERVAL 30 DAY)';
   }

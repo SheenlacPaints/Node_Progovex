@@ -97,7 +97,7 @@ export const createPost = async (req: AuthRequest, res: Response) => {
         // approved_at will be set when admin approves the post
         const [result] = await mysqlPool.execute(
             `INSERT INTO nt_posts (
-                cuserid, 
+                cuserid,  
                 content, 
                 type, 
                 media_urls, 
@@ -115,7 +115,7 @@ export const createPost = async (req: AuthRequest, res: Response) => {
 
         // Get user info for the post
         const [userRows] = await mysqlPool.execute(
-            'SELECT username, full_name, avatar_url FROM users WHERE id = ?',
+            'SELECT cuser_name as username, cuser_name as full_name, cprofile_image_name as avatar_url FROM users WHERE id = ?',
             [userId]
         );
         const user = (userRows as any[])[0];
@@ -464,7 +464,7 @@ export const getPost = async (req: AuthRequest, res: Response) => {
 
         try {
             const query = `
-                    SELECT p.*, u.username, u.full_name, u.avatar_url,
+                    SELECT p.*, u.cuser_name as username, u.cuser_name as full_name, u.avatar_url,
                     (SELECT COUNT(*) FROM nt_reactions WHERE post_id = p.id AND cuserid = ${userId}) as user_liked
                     FROM nt_posts p
                     JOIN users u ON p.cuserid = u.id
@@ -567,9 +567,9 @@ export const getComments = async (req: AuthRequest, res: Response) => {
             const query = `
                 SELECT 
                     c.*, 
-                    u.username, 
-                    u.full_name, 
-                    u.avatar_url
+                    u.cuser_name as username, 
+                    u.cuser_name as full_name, 
+                    u.cprofile_image_name as avatar_url
                 FROM nt_comments c
                 JOIN users u ON c.cuserid = u.cuserid
                 WHERE c.post_id = ? AND c.status = 'active'
@@ -648,7 +648,7 @@ export const addComment = async (req: AuthRequest, res: Response) => {
 
         // Get the comment with user details
         const [comments] = await mysqlPool.execute(
-            `SELECT c.*, u.username, u.full_name, u.avatar_url 
+            `SELECT c.*, u.cuser_name as username, u.cuser_name as full_name, u.cprofile_image_name as avatar_url 
                 FROM nt_comments c 
                 JOIN users u ON c.cuserid = u.id 
                 WHERE c.id = ?`,
@@ -983,13 +983,13 @@ export const getFeed = async (req: AuthRequest, res: Response) => {
                     p.created_at, p.updated_at, p.original_post_id, p.is_reshare,
                     p.approved_at, p.approved_by,
                     DATE_FORMAT(p.approved_at, '%Y-%m-%d %H:%i:%s') as approved_at_formatted,
-                    u.username, u.full_name, u.avatar_url,
+                    u.cuser_name as username, u.cuser_name as full_name, u.cprofile_image_name as avatar_url,
                     (SELECT COUNT(*) FROM nt_reactions WHERE post_id = p.id AND cuserid = ${userId}) as user_liked,
                     (SELECT COUNT(*) FROM nt_reshares WHERE original_post_id = p.id AND cuserid = ${userId}) as user_reshared,
                     (SELECT option_id FROM nt_poll_votes WHERE post_id = p.id AND cuserid = ${userId}) as user_voted_option,
                     op.id as original_id, op.content as original_content, op.cuserid as original_user_id,
-                    ou.username as original_username, ou.full_name as original_full_name,
-                    ou.avatar_url as original_avatar_url, op.media_urls as original_media_urls
+                    ou.cuser_name as original_username, ou.cuser_name as original_full_name,
+                    ou.cprofile_image_name as original_avatar_url, op.media_urls as original_media_urls
                 FROM nt_posts p
                 INNER JOIN users u ON p.cuserid = u.id
                 LEFT JOIN nt_posts op ON p.original_post_id = op.id
@@ -1102,7 +1102,7 @@ export const getSavedPosts = async (req: AuthRequest, res: Response) => {
 
         try {
             const query = `
-                    SELECT p.*, u.username, u.full_name, u.avatar_url
+                    SELECT p.*, u.cuser_name as username, u.cuser_name as full_name, u.cprofile_image_name as avatar_url
                     FROM nt_saved_posts sp
                     JOIN nt_posts p ON sp.post_id = p.id
                     JOIN users u ON p.cuserid = u.id
@@ -1204,7 +1204,7 @@ export const getPostsSimple = async (req: AuthRequest, res: Response) => {
 
     try {
         const [posts] = await mysqlPool.execute(
-            `SELECT p.*, u.username, u.full_name, u.avatar_url
+            `SELECT p.*, u.cuser_name as username, u.cuser_name as full_name, u.cprofile_image_name as avatar_url
                 FROM nt_posts p
                 JOIN users u ON p.cuserid = u.id
                 WHERE p.status = 'approved'
@@ -1536,7 +1536,7 @@ export const resharePost = async (req: AuthRequest, res: Response) => {
 
         // Get user info for the reshare
         const [userInfo] = await mysqlPool.execute<RowDataPacket[]>(
-            'SELECT username, full_name, avatar_url FROM users WHERE id = ?',
+            'SELECT cuser_name as username, cuser_name as full_name, cprofile_image_name as avatar_url FROM users WHERE id = ?',
             [userId]
         );
 
@@ -1704,12 +1704,12 @@ export const getResharedFeed = async (req: AuthRequest, res: Response) => {
                         p.id, p.cuserid, p.content, p.type, p.media_urls, p.hashtags, p.poll_data,
                         p.status, p.approval_status, p.likes_count, p.comments_count, p.shares_count,
                         p.created_at, p.updated_at, p.original_post_id, p.is_reshare,
-                        u.username, u.full_name, u.avatar_url,
+                        u.cuser_name as username, u.cuser_name as full_name, u.cprofile_image_name as avatar_url,
                         (SELECT COUNT(*) FROM nt_reactions WHERE post_id = p.id AND cuserid = ${userId}) as user_liked,
                         (SELECT COUNT(*) FROM nt_reshares WHERE original_post_id = p.id AND cuserid = ${userId}) as user_reshared,
                         op.id as original_id, op.content as original_content, op.cuserid as original_user_id,
-                        ou.username as original_username, ou.full_name as original_full_name,
-                        ou.avatar_url as original_avatar_url, op.media_urls as original_media_urls
+                        ou.cuser_name as original_username, ou.cuser_name as original_full_name,
+                        ou.cprofile_image_name as original_avatar_url, op.media_urls as original_media_urls
                     FROM nt_posts p
                     INNER JOIN users u ON p.cuserid = u.id
                     LEFT JOIN nt_posts op ON p.original_post_id = op.id
