@@ -1,16 +1,20 @@
+"use strict";
+var __importDefault = (this && this.__importDefault) || function (mod) {
+    return (mod && mod.__esModule) ? mod : { "default": mod };
+};
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.ActivityLog = exports.logger = exports.connectMongoDB = exports.mysqlPool = exports.testSQLServerConnection = exports.getSQLServerPool = void 0;
 // backend/src/config/database.ts
-import mysql from 'mysql2/promise';
-import mongoose from 'mongoose';
-import winston from 'winston';
-import dotenv from 'dotenv';
-import sql from 'mssql';
-
-dotenv.config();
-
+const promise_1 = __importDefault(require("mysql2/promise"));
+const mongoose_1 = __importDefault(require("mongoose"));
+const winston_1 = __importDefault(require("winston"));
+const dotenv_1 = __importDefault(require("dotenv"));
+const mssql_1 = __importDefault(require("mssql"));
+dotenv_1.default.config();
 // ==============================================
 // SQL SERVER CONNECTION POOL
 // ==============================================
-const sqlServerConfig: sql.config = {
+const sqlServerConfig = {
     user: process.env.MSSQL_USER || 'sa',
     password: process.env.MSSQL_PASSWORD || '',
     server: process.env.MSSQL_HOST || 'localhost',
@@ -27,40 +31,39 @@ const sqlServerConfig: sql.config = {
         idleTimeoutMillis: 30000
     }
 };
-
-let sqlServerPool: sql.ConnectionPool | null = null;
-
-export const getSQLServerPool = async (): Promise<sql.ConnectionPool> => {
+let sqlServerPool = null;
+const getSQLServerPool = async () => {
     if (!sqlServerPool) {
         try {
-            sqlServerPool = await sql.connect(sqlServerConfig);
+            sqlServerPool = await mssql_1.default.connect(sqlServerConfig);
             console.log('✅ SQL Server connected successfully');
-            
             // Test connection
             const result = await sqlServerPool.request().query('SELECT 1 as test');
             console.log('✅ SQL Server test query successful');
-        } catch (err) {
+        }
+        catch (err) {
             console.error('❌ SQL Server connection failed:', err);
             throw err;
         }
     }
     return sqlServerPool;
 };
-
-export const testSQLServerConnection = async (): Promise<boolean> => {
+exports.getSQLServerPool = getSQLServerPool;
+const testSQLServerConnection = async () => {
     try {
-        const pool = await getSQLServerPool();
+        const pool = await (0, exports.getSQLServerPool)();
         await pool.request().query('SELECT 1');
         return true;
-    } catch (error) {
+    }
+    catch (error) {
         return false;
     }
 };
-
+exports.testSQLServerConnection = testSQLServerConnection;
 // ==============================================
 // MYSQL CONNECTION POOL (Optional - for other features)
 // ==============================================
-export const mysqlPool = mysql.createPool({
+exports.mysqlPool = promise_1.default.createPool({
     host: process.env.MYSQL_HOST || 'localhost',
     port: parseInt(process.env.MYSQL_PORT || '3306'),
     user: process.env.MYSQL_USER || 'root',
@@ -72,61 +75,51 @@ export const mysqlPool = mysql.createPool({
     enableKeepAlive: true,
     keepAliveInitialDelay: 0
 });
-
 // ==============================================
 // MONGODB CONNECTION (optional)
 // ==============================================
-export const connectMongoDB = async () => {
+const connectMongoDB = async () => {
     const isEnabled = process.env.MONGODB_ENABLED === 'true';
-
     if (!isEnabled) {
         console.log('⚠️ MongoDB logging disabled (MONGODB_ENABLED=false)');
         return;
     }
-
     const mongoURI = process.env.MONGODB_URI;
     if (!mongoURI) {
         console.log('⚠️ MongoDB URI not provided');
         return;
     }
-
     try {
-        await mongoose.connect(mongoURI, {
+        await mongoose_1.default.connect(mongoURI, {
             serverSelectionTimeoutMS: 5000,
         });
         console.log('✅ MongoDB connected for logging');
-    } catch (error) {
+    }
+    catch (error) {
         console.error('❌ MongoDB connection error:', error);
     }
 };
-
+exports.connectMongoDB = connectMongoDB;
 // ==============================================
 // WINSTON LOGGER
 // ==============================================
-export const logger = winston.createLogger({
+exports.logger = winston_1.default.createLogger({
     level: process.env.LOG_LEVEL || 'info',
-    format: winston.format.combine(
-        winston.format.timestamp(),
-        winston.format.json()
-    ),
+    format: winston_1.default.format.combine(winston_1.default.format.timestamp(), winston_1.default.format.json()),
     transports: [
-        new winston.transports.File({ filename: 'error.log', level: 'error' }),
-        new winston.transports.File({ filename: 'combined.log' }),
-        new winston.transports.Console({
-            format: winston.format.combine(
-                winston.format.colorize(),
-                winston.format.simple()
-            )
+        new winston_1.default.transports.File({ filename: 'error.log', level: 'error' }),
+        new winston_1.default.transports.File({ filename: 'combined.log' }),
+        new winston_1.default.transports.Console({
+            format: winston_1.default.format.combine(winston_1.default.format.colorize(), winston_1.default.format.simple())
         })
     ]
 });
-
 // ==============================================
 // ACTIVITY LOG (MongoDB fallback)
 // ==============================================
-let ActivityLog: any = {
-    create: async (data: any) => {
-        logger.info('Activity Log:', data);
+let ActivityLog = {
+    create: async (data) => {
+        exports.logger.info('Activity Log:', data);
         return { _id: Date.now().toString() };
     },
     find: () => ({
@@ -139,25 +132,24 @@ let ActivityLog: any = {
     }),
     countDocuments: async () => 0
 };
-
+exports.ActivityLog = ActivityLog;
 // Try to use real MongoDB if available
 try {
-    const activityLogSchema = new mongoose.Schema({
+    const activityLogSchema = new mongoose_1.default.Schema({
         userId: { type: String, required: true },
         action: { type: String, required: true },
         entityType: { type: String, required: true },
         entityId: { type: String },
-        details: { type: mongoose.Schema.Types.Mixed },
+        details: { type: mongoose_1.default.Schema.Types.Mixed },
         ipAddress: { type: String },
         userAgent: { type: String },
         timestamp: { type: Date, default: Date.now }
     });
-
-    if (mongoose.connection.readyState === 1) {
-        ActivityLog = mongoose.model('ActivityLog', activityLogSchema);
+    if (mongoose_1.default.connection.readyState === 1) {
+        exports.ActivityLog = ActivityLog = mongoose_1.default.model('ActivityLog', activityLogSchema);
     }
-} catch (error) {
+}
+catch (error) {
     // Use fallback
 }
-
-export { ActivityLog };
+//# sourceMappingURL=database.js.map

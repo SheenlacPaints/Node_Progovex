@@ -1,94 +1,50 @@
 // backend/src/controllers/adminController.ts
 import { Request, Response } from 'express';
-import { mysqlPool } from '../config/database';
+import { getSQLServerPool } from '../config/database';
 import { ActivityLog } from '../config/database';
 import { AppError } from '../middleware/errorHandler';
 import { AuthRequest } from '../middleware/auth';
 import { sendEmail } from '../workers/emailWorker';
+import sql from 'mssql';
 
 export const getPendingPosts = async (req: AuthRequest, res: Response) => {
   try {
     const page = parseInt(req.query.page as string) || 1;
     const limit = parseInt(req.query.limit as string) || 20;
     const offset = (page - 1) * limit;
+    const pool = await getSQLServerPool();
 
     console.log('Fetching pending posts:', { page, limit, offset });
 
-    // OPTION 1: Use query() instead of execute() - Simpler and works better with LIMIT/OFFSET
     const query = `
-            SELECT p.*, u.cuser_name as username, u.cuser_name as full_name, u.cemail 
-            FROM nt_posts p
-            JOIN users u ON p.cuserid = u.cuserid
-            WHERE p.approval_status = 'waiting' AND p.status = 'pending'
-            ORDER BY p.created_at ASC
-            LIMIT ? OFFSET ?
-        `;
+      SELECT p.*, u.cuser_name as username, u.cuser_name as full_name, u.cemail 
+      FROM nt_posts p
+      JOIN users u ON p.cuserid = u.id
+      WHERE p.approval_status = 'waiting' AND p.status = 'pending'
+      ORDER BY p.created_at ASC
+      OFFSET @offset ROWS
+      FETCH NEXT @limit ROWS ONLY
+    `;
 
-    // Pass parameters as an array with exactly 2 values
-    const [posts] = await mysqlPool.query(query, [limit, offset]);
+    const result = await pool.request()
+      .input('limit', sql.Int, limit)
+      .input('offset', sql.Int, offset)
+      .query(query);
 
-    // Get total count - no parameters needed here
-    const [countResult] = await mysqlPool.query(
-      `SELECT COUNT(*) as total 
-             FROM nt_posts p
-             WHERE p.approval_status = 'waiting' AND p.status = 'pending'`
-    );
+    const countResult = await pool.request()
+      .query(`
+        SELECT COUNT(*) as total 
+        FROM nt_posts p
+        WHERE p.approval_status = 'waiting' AND p.status = 'pending'
+      `);
 
-    const total = (countResult as any[])[0]?.total || 0;
+    const total = countResult.recordset[0]?.total || 0;
 
-    console.log(`Found ${(posts as any[]).length} pending posts out of ${total} total`);
-
-    res.json({
-      success: true,
-      posts: posts,
-      pagination: {
-        page,
-        limit,
-        total,
-        totalPages: Math.ceil(total / limit)
-      }
-    });
-  } catch (error) {
-    console.error('Error getting pending posts:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Failed to fetch pending posts',
-      error: error.message
-    });
-  }
-};
-
-// Alternative version using execute() with correct parameter counting
-export const getPendingPostsExecute = async (req: AuthRequest, res: Response) => {
-  try {
-    const page = parseInt(req.query.page as string) || 1;
-    const limit = parseInt(req.query.limit as string) || 20;
-    const offset = (page - 1) * limit;
-
-    // For execute(), we need to use ? placeholders and pass an array
-    const sql = `
-            SELECT p.*, u.cuser_name as username, u.cuser_name as full_name, u.cemail 
-            FROM nt_posts p
-            JOIN users u ON p.cuserid = u.id
-            WHERE p.approval_status = 'waiting' AND p.status = 'pending'
-            ORDER BY p.created_at ASC
-            LIMIT ? OFFSET ?
-        `;
-
-    // IMPORTANT: Pass exactly 2 parameters for the 2 placeholders
-    const [posts] = await mysqlPool.execute(sql, [limit, offset]);
-
-    const [countResult] = await mysqlPool.execute(
-      `SELECT COUNT(*) as total 
-             FROM nt_posts p
-             WHERE p.approval_status = 'waiting' AND p.status = 'pending'`
-    );
-
-    const total = (countResult as any[])[0]?.total || 0;
+    console.log(`Found ${result.recordset.length} pending posts out of ${total} total`);
 
     res.json({
       success: true,
-      posts: posts,
+      posts: result.recordset,
       pagination: {
         page,
         limit,
@@ -114,50 +70,53 @@ export const getAllPostsForAdmin = async (req: AuthRequest, res: Response) => {
     const offset = (page - 1) * limit;
     const status = req.query.status as string || 'all';
     const approvalStatus = req.query.approval_status as string || 'all';
+    const pool = await getSQLServerPool();
 
-    let sql = `
-            SELECT p.*, u.cuser_name as username, u.cuser_name as full_name, u.cemail 
-            FROM nt_posts p
-            JOIN users u ON p.cuserid = u.id
-            WHERE 1=1
-        `;
-    const params: any[] = [];
+    let sql:any = `
+      SELECT p.*, u.cuser_name as username, u.cuser_name as full_name, u.cemail 
+      FROM nt_posts p
+      JOIN users u ON p.cuserid = u.id
+      WHERE 1=1
+    `;
+
+    const request = pool.request();
 
     if (status !== 'all') {
-      sql += ` AND p.status = ?`;
-      params.push(status);
+      sql += ` AND p.status = @status`;
+      request.input('status', sql.NVarChar, status);
     }
 
     if (approvalStatus !== 'all') {
-      sql += ` AND p.approval_status = ?`;
-      params.push(approvalStatus);
+      sql += ` AND p.approval_status = @approvalStatus`;
+      request.input('approvalStatus', sql.NVarChar, approvalStatus);
     }
 
-    sql += ` ORDER BY p.created_at DESC LIMIT ? OFFSET ?`;
-    params.push(limit, offset);
+    sql += ` ORDER BY p.created_at DESC OFFSET @offset ROWS FETCH NEXT @limit ROWS ONLY`;
+    request.input('limit', sql.Int, limit);
+    request.input('offset', sql.Int, offset);
 
-    const [posts] = await mysqlPool.query(sql, params);
+    const result = await request.query(sql);
 
     // Get total count
     let countSql = `SELECT COUNT(*) as total FROM nt_posts p WHERE 1=1`;
-    const countParams: any[] = [];
+    const countRequest = pool.request();
 
     if (status !== 'all') {
-      countSql += ` AND p.status = ?`;
-      countParams.push(status);
+      countSql += ` AND p.status = @status`;
+      countRequest.input('status', sql.NVarChar, status);
     }
 
     if (approvalStatus !== 'all') {
-      countSql += ` AND p.approval_status = ?`;
-      countParams.push(approvalStatus);
+      countSql += ` AND p.approval_status = @approvalStatus`;
+      countRequest.input('approvalStatus', sql.NVarChar, approvalStatus);
     }
 
-    const [countResult] = await mysqlPool.query(countSql, countParams);
-    const total = (countResult as any[])[0]?.total || 0;
+    const countResult = await countRequest.query(countSql);
+    const total = countResult.recordset[0]?.total || 0;
 
     res.json({
       success: true,
-      posts: posts,
+      posts: result.recordset,
       pagination: {
         page,
         limit,
@@ -179,41 +138,48 @@ export const approvePost = async (req: AuthRequest, res: Response) => {
   try {
     const { id } = req.params;
     const adminId = req.user!.id;
+    const pool = await getSQLServerPool();
 
     console.log('Approving post:', { postId: id, adminId });
 
-    // Update post with approval status and set approved_at to NOW()
-    const [result] = await mysqlPool.execute(
-      `UPDATE nt_posts 
-             SET approval_status = 'approved', 
-                 status = 'approved', 
-                 approved_by = ?, 
-                 approved_at = NOW() 
-             WHERE id = ? AND approval_status = 'waiting'`,
-      [adminId, id]
-    );
+    // Update post with approval status and set approved_at to GETDATE()
+    const result = await pool.request()
+      .input('adminId', sql.Int, adminId)
+      .input('postId', sql.Int, id)
+      .query(`
+        UPDATE nt_posts 
+        SET approval_status = 'approved', 
+            status = 'approved', 
+            approved_by = @adminId, 
+            approved_at = GETDATE() 
+        WHERE id = @postId AND approval_status = 'waiting'
+      `);
 
-    if ((result as any).affectedRows === 0) {
+    if (result.rowsAffected[0] === 0) {
       return res.status(404).json({
         success: false,
         message: 'Post not found or already processed'
       });
     }
 
-    // Get the approved post with all details including user info and parsed data
-    const [posts] = await mysqlPool.query(
-      `SELECT 
-                p.*, 
-                u.cuser_name as username, u.cuser_name as full_name, u.cprofile_image_name as avatar_url, u.cemail,
-                DATE_FORMAT(p.created_at, '%Y-%m-%d %H:%i:%s') as created_at_formatted,
-                DATE_FORMAT(p.approved_at, '%Y-%m-%d %H:%i:%s') as approved_at_formatted
-             FROM nt_posts p
-             JOIN users u ON p.cuserid = u.cuserid
-             WHERE p.id = ?`,
-      [id]
-    );
+    // Get the approved post with all details
+    const postsResult = await pool.request()
+      .input('postId', sql.Int, id)
+      .query(`
+        SELECT 
+          p.*, 
+          u.cuser_name as username, 
+          u.cuser_name as full_name, 
+          u.cprofile_image_name as avatar_url, 
+          u.cemail,
+          FORMAT(p.created_at, 'yyyy-MM-dd HH:mm:ss') as created_at_formatted,
+          FORMAT(p.approved_at, 'yyyy-MM-dd HH:mm:ss') as approved_at_formatted
+        FROM nt_posts p
+        JOIN users u ON p.cuserid = u.id
+        WHERE p.id = @postId
+      `);
 
-    const approvedPost = (posts as any[])[0];
+    const approvedPost = postsResult.recordset[0];
 
     // Parse JSON fields for frontend
     approvedPost.mediaUrls = approvedPost.media_urls ? JSON.parse(approvedPost.media_urls) : [];
@@ -221,34 +187,36 @@ export const approvePost = async (req: AuthRequest, res: Response) => {
     approvedPost.pollData = approvedPost.poll_data ? JSON.parse(approvedPost.poll_data) : null;
 
     // Get user's vote for this post if it's a poll
-    const [userVote] = await mysqlPool.execute(
-      'SELECT option_id FROM nt_poll_votes WHERE post_id = ? AND cuserid = ?',
-      [id, adminId]
-    );
-    approvedPost.userVotedOption = (userVote as any[])[0]?.option_id || null;
+    const userVoteResult = await pool.request()
+      .input('postId', sql.Int, id)
+      .input('adminId', sql.Int, adminId)
+      .query('SELECT option_id FROM nt_poll_votes WHERE post_id = @postId AND cuserid = @adminId');
+    approvedPost.userVotedOption = userVoteResult.recordset[0]?.option_id || null;
 
     // Log activity
-    await mysqlPool.execute(
-      `INSERT INTO nt_activity_logs (cuserid, action, entity_type, entity_id, details, ip_address, created_at) 
-             VALUES (?, 'approve_post', 'post', ?, ?, ?, NOW())`,
-      [adminId, id, JSON.stringify({
+    await pool.request()
+      .input('adminId', sql.Int, adminId)
+      .input('postId', sql.Int, id)
+      .input('details', sql.NVarChar, JSON.stringify({
         postId: id,
         created_at: approvedPost.created_at,
         approved_at: approvedPost.approved_at
-      }), req.ip || 'unknown']
-    );
+      }))
+      .input('ipAddress', sql.NVarChar, req.ip || 'unknown')
+      .query(`
+        INSERT INTO nt_activity_logs (cuserid, action, entity_type, entity_id, details, ip_address, created_at) 
+        VALUES (@adminId, 'approve_post', 'post', @postId, @details, @ipAddress, GETDATE())
+      `);
 
     // EMIT SOCKET EVENT FOR REAL-TIME UPDATE
     const io = req.app.get('io');
     if (io) {
-      // Emit to all clients that a post was approved
       io.emit('post_approved_live', {
         post: approvedPost,
         postId: parseInt(id),
         approved_at: approvedPost.approved_at
       });
 
-      // Also emit to the specific post room for detailed updates
       io.to(`post_${id}`).emit('post_status_changed', {
         postId: parseInt(id),
         status: 'approved',
@@ -280,21 +248,23 @@ export const rejectPost = async (req: AuthRequest, res: Response) => {
     const { id } = req.params;
     const { reason } = req.body;
     const adminId = req.user!.id;
+    const pool = await getSQLServerPool();
 
     console.log('Rejecting post:', { postId: id, adminId, reason });
 
-    // Update post status - approved_at remains NULL for rejected posts
-    const [result] = await mysqlPool.execute(
-      `UPDATE nt_posts 
-       SET approval_status = 'rejected', 
-           status = 'rejected', 
-           approved_by = ?, 
-           approved_at = NULL 
-       WHERE id = ? AND (approval_status = 'waiting' OR approval_status = 'pending')`,
-      [adminId, id]
-    );
+    const result = await pool.request()
+      .input('adminId', sql.Int, adminId)
+      .input('postId', sql.Int, id)
+      .query(`
+        UPDATE nt_posts 
+        SET approval_status = 'rejected', 
+            status = 'rejected', 
+            approved_by = @adminId, 
+            approved_at = NULL 
+        WHERE id = @postId AND (approval_status = 'waiting' OR approval_status = 'pending')
+      `);
 
-    if ((result as any).affectedRows === 0) {
+    if (result.rowsAffected[0] === 0) {
       return res.status(404).json({
         success: false,
         message: 'Post not found or already processed'
@@ -303,19 +273,26 @@ export const rejectPost = async (req: AuthRequest, res: Response) => {
 
     // Log rejection reason (optional)
     if (reason) {
-      await mysqlPool.execute(
-        `INSERT INTO nt_post_rejection_logs (post_id, admin_id, reason, created_at) 
-         VALUES (?, ?, ?, NOW())`,
-        [id, adminId, reason]
-      );
+      await pool.request()
+        .input('postId', sql.Int, id)
+        .input('adminId', sql.Int, adminId)
+        .input('reason', sql.NVarChar, reason)
+        .query(`
+          INSERT INTO nt_post_rejection_logs (post_id, admin_id, reason, created_at) 
+          VALUES (@postId, @adminId, @reason, GETDATE())
+        `);
     }
 
     // Log activity
-    await mysqlPool.execute(
-      `INSERT INTO nt_activity_logs (cuserid, action, entity_type, entity_id, details, ip_address, created_at) 
-       VALUES (?, 'reject_post', 'post', ?, ?, ?, NOW())`,
-      [adminId, id, JSON.stringify({ reason: reason || 'No reason provided' }), req.ip || 'unknown']
-    );
+    await pool.request()
+      .input('adminId', sql.Int, adminId)
+      .input('postId', sql.Int, id)
+      .input('details', sql.NVarChar, JSON.stringify({ reason: reason || 'No reason provided' }))
+      .input('ipAddress', sql.NVarChar, req.ip || 'unknown')
+      .query(`
+        INSERT INTO nt_activity_logs (cuserid, action, entity_type, entity_id, details, ip_address, created_at) 
+        VALUES (@adminId, 'reject_post', 'post', @postId, @details, @ipAddress, GETDATE())
+      `);
 
     // Emit socket event for real-time update
     const io = req.app.get('io');
@@ -343,21 +320,24 @@ export const rejectPost = async (req: AuthRequest, res: Response) => {
 // Get post statistics for admin dashboard
 export const getPostStats = async (req: AuthRequest, res: Response) => {
   try {
-    const [stats] = await mysqlPool.query(`
-            SELECT 
-                COUNT(*) as total_posts,
-                SUM(CASE WHEN approval_status = 'waiting' AND status = 'pending' THEN 1 ELSE 0 END) as pending_posts,
-                SUM(CASE WHEN approval_status = 'approved' AND status = 'approved' THEN 1 ELSE 0 END) as approved_posts,
-                SUM(CASE WHEN approval_status = 'rejected' THEN 1 ELSE 0 END) as rejected_posts,
-                SUM(CASE WHEN type = 'poll' THEN 1 ELSE 0 END) as poll_posts,
-                SUM(CASE WHEN type = 'text' THEN 1 ELSE 0 END) as text_posts,
-                SUM(CASE WHEN media_urls != '[]' AND media_urls IS NOT NULL THEN 1 ELSE 0 END) as posts_with_media
-            FROM nt_posts
-        `);
+    const pool = await getSQLServerPool();
+
+    const result = await pool.request()
+      .query(`
+        SELECT 
+          COUNT(*) as total_posts,
+          SUM(CASE WHEN approval_status = 'waiting' AND status = 'pending' THEN 1 ELSE 0 END) as pending_posts,
+          SUM(CASE WHEN approval_status = 'approved' AND status = 'approved' THEN 1 ELSE 0 END) as approved_posts,
+          SUM(CASE WHEN approval_status = 'rejected' THEN 1 ELSE 0 END) as rejected_posts,
+          SUM(CASE WHEN type = 'poll' THEN 1 ELSE 0 END) as poll_posts,
+          SUM(CASE WHEN type = 'text' THEN 1 ELSE 0 END) as text_posts,
+          SUM(CASE WHEN media_urls != '[]' AND media_urls IS NOT NULL THEN 1 ELSE 0 END) as posts_with_media
+        FROM nt_posts
+      `);
 
     res.json({
       success: true,
-      stats: (stats as any[])[0]
+      stats: result.recordset[0]
     });
   } catch (error) {
     console.error('Error getting post stats:', error);
@@ -370,370 +350,551 @@ export const getPostStats = async (req: AuthRequest, res: Response) => {
 };
 
 export const bulkApprovePosts = async (req: AuthRequest, res: Response) => {
-  const { postIds } = req.body;
-  const adminId = req.user!.id;
+  try {
+    const { postIds } = req.body;
+    const adminId = req.user!.id;
+    const pool = await getSQLServerPool();
 
-  if (!postIds || !Array.isArray(postIds)) {
-    throw new AppError('Invalid post IDs', 400);
+    if (!postIds || !Array.isArray(postIds)) {
+      throw new AppError('Invalid post IDs', 400);
+    }
+
+    for (const postId of postIds) {
+      await pool.request()
+        .input('adminId', sql.Int, adminId)
+        .input('postId', sql.Int, postId)
+        .query(`
+          UPDATE nt_posts 
+          SET status = 'approved', 
+              approval_status = 'approved', 
+              approved_by = @adminId, 
+              approved_at = GETDATE() 
+          WHERE id = @postId AND approval_status = 'waiting'
+        `);
+    }
+
+    res.json({ success: true, message: `${postIds.length} posts approved` });
+  } catch (error) {
+    console.error('Error bulk approving posts:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to bulk approve posts',
+      error: error.message
+    });
   }
-
-  for (const postId of postIds) {
-    await mysqlPool.execute(
-      `UPDATE nt_posts 
-       SET status = 'approved', 
-           approval_status = 'approved', 
-           approved_by = ?, 
-           approved_at = NOW() 
-       WHERE id = ? AND approval_status = 'waiting'`,
-      [adminId, postId]
-    );
-  }
-
-  res.json({ success: true, message: `${postIds.length} posts approved` });
 };
 
 export const bulkRejectPosts = async (req: AuthRequest, res: Response) => {
-  const { postIds } = req.body;
-  const adminId = req.user!.id;
+  try {
+    const { postIds } = req.body;
+    const adminId = req.user!.id;
+    const pool = await getSQLServerPool();
 
-  if (!postIds || !Array.isArray(postIds)) {
-    throw new AppError('Invalid post IDs', 400);
+    if (!postIds || !Array.isArray(postIds)) {
+      throw new AppError('Invalid post IDs', 400);
+    }
+
+    for (const postId of postIds) {
+      await pool.request()
+        .input('postId', sql.Int, postId)
+        .query(`
+          UPDATE nt_posts 
+          SET status = 'rejected', 
+              approval_status = 'rejected' 
+          WHERE id = @postId AND approval_status = 'waiting'
+        `);
+    }
+
+    res.json({ success: true, message: `${postIds.length} posts rejected` });
+  } catch (error) {
+    console.error('Error bulk rejecting posts:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to bulk reject posts',
+      error: error.message
+    });
   }
-
-  for (const postId of postIds) {
-    await mysqlPool.execute(
-      `UPDATE nt_posts SET status = "rejected", approval_status = "rejected" WHERE id = ? AND approval_status = 'waiting'`,
-      [postId]
-    );
-  }
-
-  res.json({ success: true, message: `${postIds.length} posts rejected` });
 };
 
 export const getAllUsers = async (req: AuthRequest, res: Response) => {
-  const { page = 1, limit = 20, role, is_active } = req.query;
-  const offset = (Number(page) - 1) * Number(limit);
+  try {
+    const { page = 1, limit = 20, role, is_active } = req.query;
+    const offset = (Number(page) - 1) * Number(limit);
+    const pool = await getSQLServerPool();
 
-  let query = 'SELECT id, cuser_name as username, cemail,cuser_name as full_name, cprofile_image_name as avatar_url, role, is_active, email_verified, created_at FROM users WHERE 1=1';
-  const params: any[] = [];
+    let query = `
+      SELECT id, cuser_name as username, cemail, cuser_name as full_name, 
+             cprofile_image_name as avatar_url, role, is_active, email_verified, created_at 
+      FROM users WHERE 1=1
+    `;
 
-  if (role) {
-    query += ' AND role = ?';
-    params.push(role);
+    const request = pool.request();
+
+    if (role) {
+      query += ` AND role = @role`;
+      request.input('role', sql.NVarChar, role);
+    }
+
+    if (is_active !== undefined) {
+      query += ` AND is_active = @isActive`;
+      request.input('isActive', sql.Bit, is_active === 'true');
+    }
+
+    query += ` ORDER BY created_at DESC OFFSET @offset ROWS FETCH NEXT @limit ROWS ONLY`;
+    request.input('limit', sql.Int, Number(limit));
+    request.input('offset', sql.Int, offset);
+
+    const result = await request.query(query);
+
+    const totalResult = await pool.request()
+      .query('SELECT COUNT(*) as total FROM users');
+
+    res.json({
+      success: true,
+      users: result.recordset,
+      total: totalResult.recordset[0]?.total || 0,
+      page: Number(page),
+      limit: Number(limit)
+    });
+  } catch (error) {
+    console.error('Error getting users:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch users',
+      error: error.message
+    });
   }
-
-  if (is_active !== undefined) {
-    query += ' AND is_active = ?';
-    params.push(is_active === 'true');
-  }
-
-  query += ' ORDER BY created_at DESC LIMIT ? OFFSET ?';
-  params.push(Number(limit), offset);
-
-  const [users] = await mysqlPool.execute(query, params);
-
-  const [total] = await mysqlPool.execute(
-    'SELECT COUNT(*) as total FROM users'
-  );
-
-  res.json({
-    success: true,
-    users,
-    total: (total as any[])[0].total,
-    page: Number(page),
-    limit: Number(limit)
-  });
 };
 
 export const updateUserRole = async (req: AuthRequest, res: Response) => {
-  const { id } = req.params;
-  const { role } = req.body;
+  try {
+    const { id } = req.params;
+    const { role } = req.body;
+    const pool = await getSQLServerPool();
 
-  if (!['user', 'moderator', 'admin'].includes(role)) {
-    throw new AppError('Invalid role', 400);
+    if (!['user', 'moderator', 'admin'].includes(role)) {
+      throw new AppError('Invalid role', 400);
+    }
+
+    await pool.request()
+      .input('role', sql.NVarChar, role)
+      .input('userId', sql.Int, id)
+      .query('UPDATE users SET role = @role WHERE id = @userId');
+
+    await ActivityLog.create({
+      userId: req.user!.id.toString(),
+      action: 'update_user_role',
+      entityType: 'user',
+      entityId: id,
+      details: { role },
+      ipAddress: req.ip
+    });
+
+    res.json({ success: true, message: 'User role updated' });
+  } catch (error) {
+    console.error('Error updating user role:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to update user role',
+      error: error.message
+    });
   }
-
-  await mysqlPool.execute(
-    'UPDATE users SET role = ? WHERE id = ?',
-    [role, id]
-  );
-
-  await ActivityLog.create({
-    userId: req.user!.id.toString(),
-    action: 'update_user_role',
-    entityType: 'user',
-    entityId: id,
-    details: { role },
-    ipAddress: req.ip
-  });
-
-  res.json({ success: true, message: 'User role updated' });
 };
 
 export const suspendUser = async (req: AuthRequest, res: Response) => {
-  const { id } = req.params;
-  const { reason } = req.body;
+  try {
+    const { id } = req.params;
+    const { reason } = req.body;
+    const pool = await getSQLServerPool();
 
-  await mysqlPool.execute(
-    'UPDATE users SET is_active = false WHERE id = ?',
-    [id]
-  );
+    await pool.request()
+      .input('userId', sql.Int, id)
+      .query('UPDATE users SET is_active = 0 WHERE id = @userId');
 
-  await mysqlPool.execute('DELETE FROM nt_sessions WHERE cuserid = ?', [id]);
+    await pool.request()
+      .input('userId', sql.Int, id)
+      .query('DELETE FROM nt_sessions WHERE cuserid = @userId');
 
-  await ActivityLog.create({
-    userId: req.user!.id.toString(),
-    action: 'suspend_user',
-    entityType: 'user',
-    entityId: id,
-    details: { reason },
-    ipAddress: req.ip
-  });
+    await ActivityLog.create({
+      userId: req.user!.id.toString(),
+      action: 'suspend_user',
+      entityType: 'user',
+      entityId: id,
+      details: { reason },
+      ipAddress: req.ip
+    });
 
-  res.json({ success: true, message: 'User suspended' });
+    res.json({ success: true, message: 'User suspended' });
+  } catch (error) {
+    console.error('Error suspending user:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to suspend user',
+      error: error.message
+    });
+  }
 };
 
 export const activateUser = async (req: AuthRequest, res: Response) => {
-  const { id } = req.params;
+  try {
+    const { id } = req.params;
+    const pool = await getSQLServerPool();
 
-  await mysqlPool.execute(
-    'UPDATE users SET is_active = true WHERE id = ?',
-    [id]
-  );
+    await pool.request()
+      .input('userId', sql.Int, id)
+      .query('UPDATE users SET is_active = 1 WHERE id = @userId');
 
-  res.json({ success: true, message: 'User activated' });
+    res.json({ success: true, message: 'User activated' });
+  } catch (error) {
+    console.error('Error activating user:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to activate user',
+      error: error.message
+    });
+  }
 };
 
 export const deleteUser = async (req: AuthRequest, res: Response) => {
-  const { id } = req.params;
+  try {
+    const { id } = req.params;
+    const pool = await getSQLServerPool();
 
-  await mysqlPool.execute('DELETE FROM users WHERE id = ?', [id]);
+    await pool.request()
+      .input('userId', sql.Int, id)
+      .query('DELETE FROM users WHERE id = @userId');
 
-  await ActivityLog.create({
-    userId: req.user!.id.toString(),
-    action: 'delete_user',
-    entityType: 'user',
-    entityId: id,
-    ipAddress: req.ip
-  });
+    await ActivityLog.create({
+      userId: req.user!.id.toString(),
+      action: 'delete_user',
+      entityType: 'user',
+      entityId: id,
+      ipAddress: req.ip
+    });
 
-  res.json({ success: true, message: 'User deleted' });
+    res.json({ success: true, message: 'User deleted' });
+  } catch (error) {
+    console.error('Error deleting user:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to delete user',
+      error: error.message
+    });
+  }
 };
 
 export const getSystemStats = async (req: AuthRequest, res: Response) => {
-  const [totalUsers] = await mysqlPool.execute('SELECT COUNT(*) as count FROM users');
-  const [totalPosts] = await mysqlPool.execute('SELECT COUNT(*) as count FROM nt_posts');
-  const [pendingPosts] = await mysqlPool.execute('SELECT COUNT(*) as count FROM nt_posts WHERE approval_status = "waiting"');
-  const [totalComments] = await mysqlPool.execute('SELECT COUNT(*) as count FROM nt_comments');
-  const [totalReactions] = await mysqlPool.execute('SELECT COUNT(*) as count FROM nt_reactions');
+  try {
+    const pool = await getSQLServerPool();
 
-  const [postsByDay] = await mysqlPool.execute(
-    `SELECT DATE(created_at) as date, COUNT(*) as count 
-     FROM nt_posts 
-     WHERE created_at >= DATE_SUB(NOW(), INTERVAL 7 DAY)
-     GROUP BY DATE(created_at)`
-  );
+    const [totalUsers, totalPosts, pendingPosts, totalComments, totalReactions, postsByDay] = await Promise.all([
+      pool.request().query('SELECT COUNT(*) as count FROM users'),
+      pool.request().query('SELECT COUNT(*) as count FROM nt_posts'),
+      pool.request().query('SELECT COUNT(*) as count FROM nt_posts WHERE approval_status = "waiting"'),
+      pool.request().query('SELECT COUNT(*) as count FROM nt_comments'),
+      pool.request().query('SELECT COUNT(*) as count FROM nt_reactions'),
+      pool.request().query(`
+        SELECT CAST(created_at as DATE) as date, COUNT(*) as count 
+        FROM nt_posts 
+        WHERE created_at >= DATEADD(DAY, -7, GETDATE())
+        GROUP BY CAST(created_at as DATE)
+      `)
+    ]);
 
-  res.json({
-    success: true,
-    stats: {
-      totalUsers: (totalUsers as any[])[0].count,
-      totalPosts: (totalPosts as any[])[0].count,
-      pendingPosts: (pendingPosts as any[])[0].count,
-      totalComments: (totalComments as any[])[0].count,
-      totalReactions: (totalReactions as any[])[0].count,
-      postsByDay
-    }
-  });
+    res.json({
+      success: true,
+      stats: {
+        totalUsers: totalUsers.recordset[0]?.count || 0,
+        totalPosts: totalPosts.recordset[0]?.count || 0,
+        pendingPosts: pendingPosts.recordset[0]?.count || 0,
+        totalComments: totalComments.recordset[0]?.count || 0,
+        totalReactions: totalReactions.recordset[0]?.count || 0,
+        postsByDay: postsByDay.recordset || []
+      }
+    });
+  } catch (error) {
+    console.error('Error getting system stats:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch system stats',
+      error: error.message
+    });
+  }
 };
 
 export const getActivityLogs = async (req: AuthRequest, res: Response) => {
-  const { page = 1, limit = 50, action, userId } = req.query;
-  const offset = (Number(page) - 1) * Number(limit);
+  try {
+    const { page = 1, limit = 50, action, userId } = req.query;
+    const offset = (Number(page) - 1) * Number(limit);
 
-  const filter: any = {};
-  if (action) filter.action = action;
-  if (userId) filter.userId = userId;
+    const filter: any = {};
+    if (action) filter.action = action;
+    if (userId) filter.userId = userId;
 
-  const logs = await ActivityLog.find(filter)
-    .sort({ timestamp: -1 })
-    .skip(offset)
-    .limit(Number(limit));
+    const logs = await ActivityLog.find(filter)
+      .sort({ timestamp: -1 })
+      .skip(offset)
+      .limit(Number(limit));
 
-  const total = await ActivityLog.countDocuments(filter);
+    const total = await ActivityLog.countDocuments(filter);
 
-  res.json({
-    success: true,
-    logs,
-    total,
-    page: Number(page),
-    limit: Number(limit)
-  });
+    res.json({
+      success: true,
+      logs,
+      total,
+      page: Number(page),
+      limit: Number(limit)
+    });
+  } catch (error) {
+    console.error('Error getting activity logs:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch activity logs',
+      error: error.message
+    });
+  }
 };
 
 export const getReportedPosts = async (req: AuthRequest, res: Response) => {
-  const [reports] = await mysqlPool.execute(
-    `SELECT r.*, p.content, p.cuserid as post_owner_id, 
-     u.cuser_name as reporter_username, u2.cuser_name as post_owner_username
-     FROM nt_reports r
-     JOIN nt_posts p ON r.post_id = p.id
-     JOIN users u ON r.cuserid = u.id
-     JOIN users u2 ON p.cuserid = u2.id
-     WHERE r.resolved = false
-     ORDER BY r.created_at DESC`
-  );
+  try {
+    const pool = await getSQLServerPool();
 
-  res.json({ success: true, reports: reports });
+    const result = await pool.request()
+      .query(`
+        SELECT r.*, p.content, p.cuserid as post_owner_id, 
+               u.cuser_name as reporter_username, u2.cuser_name as post_owner_username
+        FROM nt_reports r
+        JOIN nt_posts p ON r.post_id = p.id
+        JOIN users u ON r.cuserid = u.id
+        JOIN users u2 ON p.cuserid = u2.id
+        WHERE r.resolved = 0
+        ORDER BY r.created_at DESC
+      `);
+
+    res.json({ success: true, reports: result.recordset });
+  } catch (error) {
+    console.error('Error getting reported posts:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch reported posts',
+      error: error.message
+    });
+  }
 };
 
 export const resolveReport = async (req: AuthRequest, res: Response) => {
-  const { id } = req.params;
-  const { action } = req.body;
+  try {
+    const { id } = req.params;
+    const { action } = req.body;
+    const pool = await getSQLServerPool();
 
-  if (action === 'delete_post') {
-    const [reports] = await mysqlPool.execute(
-      'SELECT post_id FROM nt_reports WHERE id = ?',
-      [id]
-    );
-    const report = (reports as any[])[0];
+    if (action === 'delete_post') {
+      const reportResult = await pool.request()
+        .input('reportId', sql.Int, id)
+        .query('SELECT post_id FROM nt_reports WHERE id = @reportId');
+      const report = reportResult.recordset[0];
 
-    if (report) {
-      await mysqlPool.execute('UPDATE nt_posts SET status = "deleted" WHERE id = ?', [report.post_id]);
+      if (report) {
+        await pool.request()
+          .input('postId', sql.Int, report.post_id)
+          .query('UPDATE nt_posts SET status = "deleted" WHERE id = @postId');
+      }
     }
+
+    await pool.request()
+      .input('reportId', sql.Int, id)
+      .input('adminId', sql.Int, req.user!.id)
+      .query(`
+        UPDATE nt_reports 
+        SET resolved = 1, resolved_by = @adminId, resolved_at = GETDATE() 
+        WHERE id = @reportId
+      `);
+
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Error resolving report:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to resolve report',
+      error: error.message
+    });
   }
-
-  await mysqlPool.execute(
-    'UPDATE nt_reports SET resolved = true, resolved_by = ?, resolved_at = NOW() WHERE id = ?',
-    [req.user!.id, id]
-  );
-
-  res.json({ success: true });
 };
 
 export const getAnalytics = async (req: AuthRequest, res: Response) => {
-  const { period = 'week' } = req.query;
-  let days = 7;
+  try {
+    const { period = 'week' } = req.query;
+    let days = 7;
+    const pool = await getSQLServerPool();
 
-  if (period === 'month') {
-    days = 30;
-  } else if (period === 'year') {
-    days = 365;
-  }
-
-  const [userGrowth] = await mysqlPool.execute(
-    `SELECT DATE(created_at) as date, COUNT(*) as new_users 
-     FROM users 
-     WHERE created_at >= DATE_SUB(NOW(), INTERVAL ? DAY)
-     GROUP BY DATE(created_at)`,
-    [days]
-  );
-
-  const [postActivity] = await mysqlPool.execute(
-    `SELECT DATE(created_at) as date, COUNT(*) as posts 
-     FROM nt_posts 
-     WHERE created_at >= DATE_SUB(NOW(), INTERVAL ? DAY)
-     GROUP BY DATE(created_at)`,
-    [days]
-  );
-
-  const [topContributors] = await mysqlPool.execute(
-    `SELECT u.cuser_name as username, COUNT(p.id) as post_count 
-     FROM users u
-     JOIN nt_posts p ON u.id = p.cuserid
-     WHERE p.created_at >= DATE_SUB(NOW(), INTERVAL 30 DAY)
-     GROUP BY u.id
-     ORDER BY post_count DESC
-     LIMIT 10`
-  );
-
-  res.json({
-    success: true,
-    analytics: {
-      userGrowth,
-      postActivity,
-      topContributors,
-      period
+    if (period === 'month') {
+      days = 30;
+    } else if (period === 'year') {
+      days = 365;
     }
-  });
+
+    const [userGrowth, postActivity, topContributors] = await Promise.all([
+      pool.request()
+        .input('days', sql.Int, days)
+        .query(`
+          SELECT CAST(created_at as DATE) as date, COUNT(*) as new_users 
+          FROM users 
+          WHERE created_at >= DATEADD(DAY, -@days, GETDATE())
+          GROUP BY CAST(created_at as DATE)
+        `),
+      pool.request()
+        .input('days', sql.Int, days)
+        .query(`
+          SELECT CAST(created_at as DATE) as date, COUNT(*) as posts 
+          FROM nt_posts 
+          WHERE created_at >= DATEADD(DAY, -@days, GETDATE())
+          GROUP BY CAST(created_at as DATE)
+        `),
+      pool.request()
+        .query(`
+          SELECT TOP 10 u.cuser_name as username, COUNT(p.id) as post_count 
+          FROM users u
+          JOIN nt_posts p ON u.id = p.cuserid
+          WHERE p.created_at >= DATEADD(DAY, -30, GETDATE())
+          GROUP BY u.id, u.cuser_name
+          ORDER BY post_count DESC
+        `)
+    ]);
+
+    res.json({
+      success: true,
+      analytics: {
+        userGrowth: userGrowth.recordset,
+        postActivity: postActivity.recordset,
+        topContributors: topContributors.recordset,
+        period
+      }
+    });
+  } catch (error) {
+    console.error('Error getting analytics:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch analytics',
+      error: error.message
+    });
+  }
 };
 
 export const sendAnnouncement = async (req: AuthRequest, res: Response) => {
-  const { title, message, audience = 'all' } = req.body;
+  try {
+    const { title, message, audience = 'all' } = req.body;
+    const pool = await getSQLServerPool();
 
-  let userQuery = 'SELECT cemail, cuser_name as username FROM users WHERE is_active = true';
-  if (audience === 'active') {
-    userQuery += ' AND created_at >= DATE_SUB(NOW(), INTERVAL 30 DAY)';
+    let userQuery = 'SELECT cemail, cuser_name as username FROM users WHERE is_active = 1';
+    if (audience === 'active') {
+      userQuery += ' AND created_at >= DATEADD(DAY, -30, GETDATE())';
+    }
+
+    const result = await pool.request().query(userQuery);
+    const users = result.recordset;
+
+    for (const user of users) {
+      await sendEmail(
+        user.cemail,
+        title,
+        'announcement',
+        { name: user.username, message, title }
+      );
+    }
+
+    await ActivityLog.create({
+      userId: req.user!.id.toString(),
+      action: 'send_announcement',
+      entityType: 'system',
+      details: { title, audience, recipientCount: users.length },
+      ipAddress: req.ip
+    });
+
+    res.json({
+      success: true,
+      message: `Announcement sent to ${users.length} users`
+    });
+  } catch (error) {
+    console.error('Error sending announcement:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to send announcement',
+      error: error.message
+    });
   }
-
-  const [users] = await mysqlPool.execute(userQuery);
-
-  for (const user of users as any[]) {
-    await sendEmail(
-      user.cemail,
-      title,
-      'announcement',
-      { name: user.username, message, title }
-    );
-  }
-
-  await ActivityLog.create({
-    userId: req.user!.id.toString(),
-    action: 'send_announcement',
-    entityType: 'system',
-    details: { title, audience, recipientCount: (users as any[]).length },
-    ipAddress: req.ip
-  });
-
-  res.json({
-    success: true,
-    message: `Announcement sent to ${(users as any[]).length} users`
-  });
 };
 
 export const getModerationQueue = async (req: AuthRequest, res: Response) => {
-  const [pendingPosts] = await mysqlPool.execute(
-    'SELECT COUNT(*) as count FROM nt_posts WHERE approval_status = "waiting"'
-  );
+  try {
+    const pool = await getSQLServerPool();
 
-  const [reportedPosts] = await mysqlPool.execute(
-    'SELECT COUNT(*) as count FROM nt_reports WHERE resolved = false'
-  );
+    const [pendingPosts, reportedPosts] = await Promise.all([
+      pool.request().query('SELECT COUNT(*) as count FROM nt_posts WHERE approval_status = "waiting"'),
+      pool.request().query('SELECT COUNT(*) as count FROM nt_reports WHERE resolved = 0')
+    ]);
 
-  res.json({
-    success: true,
-    queue: {
-      pendingPosts: (pendingPosts as any[])[0].count,
-      reportedPosts: (reportedPosts as any[])[0].count
-    }
-  });
+    res.json({
+      success: true,
+      queue: {
+        pendingPosts: pendingPosts.recordset[0]?.count || 0,
+        reportedPosts: reportedPosts.recordset[0]?.count || 0
+      }
+    });
+  } catch (error) {
+    console.error('Error getting moderation queue:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch moderation queue',
+      error: error.message
+    });
+  }
 };
 
 export const assignModerator = async (req: AuthRequest, res: Response) => {
-  const { id } = req.params;
+  try {
+    const { id } = req.params;
+    const pool = await getSQLServerPool();
 
-  await mysqlPool.execute(
-    'UPDATE users SET role = "moderator" WHERE id = ?',
-    [id]
-  );
+    await pool.request()
+      .input('userId', sql.Int, id)
+      .query('UPDATE users SET role = "moderator" WHERE id = @userId');
 
-  res.json({ success: true, message: 'Moderator assigned' });
+    res.json({ success: true, message: 'Moderator assigned' });
+  } catch (error) {
+    console.error('Error assigning moderator:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to assign moderator',
+      error: error.message
+    });
+  }
 };
 
 export const getSystemHealth = async (req: AuthRequest, res: Response) => {
-  let mysqlHealthy = false;
   try {
-    await mysqlPool.query('SELECT 1');
-    mysqlHealthy = true;
-  } catch (error) {
-    console.error('MySQL health check failed', error);
-  }
+    let sqlServerHealthy = false;
+    try {
+      const pool = await getSQLServerPool();
+      await pool.request().query('SELECT 1');
+      sqlServerHealthy = true;
+    } catch (error) {
+      console.error('SQL Server health check failed', error);
+    }
 
-  res.json({
-    success: true,
-    status: mysqlHealthy ? 'healthy' : 'degraded',
-    services: {
-      mysql: mysqlHealthy
-    },
-    timestamp: new Date()
-  });
+    res.json({
+      success: true,
+      status: sqlServerHealthy ? 'healthy' : 'degraded',
+      services: {
+        sqlServer: sqlServerHealthy
+      },
+      timestamp: new Date()
+    });
+  } catch (error) {
+    console.error('Error checking system health:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to check system health',
+      error: error.message
+    });
+  }
 };

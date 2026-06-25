@@ -1,79 +1,73 @@
-import { Request, Response } from 'express';
-import { getSQLServerPool } from '../config/database';
-import { ActivityLog } from '../config/database';
-import { AuthRequest } from '../middleware/auth';
-import { AppError } from '../middleware/errorHandler';
-import sharp from 'sharp';
-import path from 'path';
-import fs from 'fs/promises';
-import moment from 'moment-timezone';
-import sql from 'mssql';
-
-const getIo = (req: AuthRequest) => {
+"use strict";
+var __importDefault = (this && this.__importDefault) || function (mod) {
+    return (mod && mod.__esModule) ? mod : { "default": mod };
+};
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.getResharedFeed = exports.getReshareStatus = exports.unResharePost = exports.resharePost = exports.getUserPollVote = exports.votePoll = exports.getPostsSimple = exports.getTrendingHashtags = exports.reportPost = exports.getSavedPosts = exports.unsavePost = exports.savePost = exports.getFeed = exports.sharePost = exports.getReactions = exports.removeReaction = exports.removeCommentReaction = exports.addCommentReaction = exports.addReaction = exports.deleteComment = exports.addComment = exports.getComments = exports.deletePost = exports.updatePost = exports.getPost = exports.getPosts = exports.createPost = void 0;
+const database_1 = require("../config/database");
+const errorHandler_1 = require("../middleware/errorHandler");
+const sharp_1 = __importDefault(require("sharp"));
+const path_1 = __importDefault(require("path"));
+const promises_1 = __importDefault(require("fs/promises"));
+const moment_timezone_1 = __importDefault(require("moment-timezone"));
+const mssql_1 = __importDefault(require("mssql"));
+const getIo = (req) => {
     return req.app.get('io');
 };
-
 // Helper function to process images
-const processImage = async (filePath: string): Promise<string> => {
+const processImage = async (filePath) => {
     try {
-        const dir = path.dirname(filePath);
-        const ext = path.extname(filePath);
-        const filename = path.basename(filePath, ext);
-        const outputPath = path.join(dir, `${filename}.webp`);
-
-        await sharp(filePath)
+        const dir = path_1.default.dirname(filePath);
+        const ext = path_1.default.extname(filePath);
+        const filename = path_1.default.basename(filePath, ext);
+        const outputPath = path_1.default.join(dir, `${filename}.webp`);
+        await (0, sharp_1.default)(filePath)
             .resize(1200, 1200, { fit: 'inside', withoutEnlargement: true })
             .webp({ quality: 80 })
             .toFile(outputPath);
-
-        await fs.unlink(filePath);
+        await promises_1.default.unlink(filePath);
         return outputPath;
-    } catch (error) {
+    }
+    catch (error) {
         console.error('Error processing image:', error);
         return filePath;
     }
 };
-
 // ==============================================
 // CREATE POST
 // ==============================================
-export const createPost = async (req: AuthRequest, res: Response) => {
+const createPost = async (req, res) => {
     try {
         const { content, type, pollData, hashtags } = req.body;
-        const userId = req.user!.id;
-        const pool = await getSQLServerPool();
-
+        const userId = req.user.id;
+        const pool = await (0, database_1.getSQLServerPool)();
         console.log('📝 Creating post with data:', {
             content: content?.substring(0, 50),
             type,
             pollData: pollData ? JSON.stringify(pollData).substring(0, 100) : null,
             hashtags
         });
-
         // Process uploaded files
-        const mediaUrls: string[] = [];
-        const fileSizes: number[] = [];
-
-        if (req.files && (req.files as any[]).length > 0) {
-            console.log(`📁 Processing ${(req.files as any[]).length} files`);
-
-            for (const file of req.files as any[]) {
+        const mediaUrls = [];
+        const fileSizes = [];
+        if (req.files && req.files.length > 0) {
+            console.log(`📁 Processing ${req.files.length} files`);
+            for (const file of req.files) {
                 console.log(`📄 File: ${file.originalname}, Size: ${(file.size / (1024 * 1024)).toFixed(2)}MB, Type: ${file.mimetype}`);
                 fileSizes.push(file.size);
-
                 let filePath = file.path;
-
                 if (file.mimetype.startsWith('image/')) {
                     try {
                         filePath = await processImage(file.path);
                         console.log(`🖼️ Image processed: ${filePath}`);
-                    } catch (err) {
+                    }
+                    catch (err) {
                         console.error('Error processing image:', err);
                     }
-                } else {
+                }
+                else {
                     console.log(`🎥 Video file saved: ${filePath}`);
                 }
-
                 let url = filePath.replace(/\\/g, '/');
                 url = url.replace(/^backend\//, '');
                 if (!url.startsWith('/uploads/')) {
@@ -82,24 +76,23 @@ export const createPost = async (req: AuthRequest, res: Response) => {
                 mediaUrls.push(url);
             }
         }
-
         let finalPollData = null;
         if (pollData) {
             if (typeof pollData === 'string') {
                 finalPollData = pollData;
-            } else {
+            }
+            else {
                 finalPollData = JSON.stringify(pollData);
             }
             console.log('📊 Poll data prepared for storage:', finalPollData.substring(0, 200));
         }
-
         const result = await pool.request()
-            .input('cuserid', sql.Int, userId)
-            .input('content', sql.NVarChar, content || null)
-            .input('type', sql.NVarChar, type || 'text')
-            .input('media_urls', sql.NVarChar, JSON.stringify(mediaUrls))
-            .input('poll_data', sql.NVarChar, finalPollData)
-            .input('hashtags', sql.NVarChar, hashtags ? JSON.stringify(hashtags) : null)
+            .input('cuserid', mssql_1.default.Int, userId)
+            .input('content', mssql_1.default.NVarChar, content || null)
+            .input('type', mssql_1.default.NVarChar, type || 'text')
+            .input('media_urls', mssql_1.default.NVarChar, JSON.stringify(mediaUrls))
+            .input('poll_data', mssql_1.default.NVarChar, finalPollData)
+            .input('hashtags', mssql_1.default.NVarChar, hashtags ? JSON.stringify(hashtags) : null)
             .query(`
                 INSERT INTO nt_posts (
                     cuserid, content, type, media_urls, poll_data, hashtags, 
@@ -108,21 +101,18 @@ export const createPost = async (req: AuthRequest, res: Response) => {
                 VALUES (@cuserid, @content, @type, @media_urls, @poll_data, @hashtags, 
                     'pending', 'waiting', GETDATE(), NULL)
             `);
-
         const inserted = result.recordset[0];
         const postId = inserted.id;
-
         const userResult = await pool.request()
-            .input('userId', sql.Int, userId)
+            .input('userId', mssql_1.default.Int, userId)
             .query(`
                 SELECT cuser_name as username, cuser_name as full_name, 
                        cprofile_image_name as avatar_url 
                 FROM users WHERE id = @userId
             `);
         const user = userResult.recordset[0];
-
         const postResult = await pool.request()
-            .input('postId', sql.Int, postId)
+            .input('postId', mssql_1.default.Int, postId)
             .query(`
                 SELECT 
                     id, cuserid, content, type, media_urls, poll_data, hashtags,
@@ -132,18 +122,16 @@ export const createPost = async (req: AuthRequest, res: Response) => {
                 FROM nt_posts 
                 WHERE id = @postId
             `);
-
         const createdPost = postResult.recordset[0];
-
         let responsePollData = null;
         if (finalPollData) {
             try {
                 responsePollData = JSON.parse(finalPollData);
-            } catch (e) {
+            }
+            catch (e) {
                 responsePollData = finalPollData;
             }
         }
-
         const newPost = {
             id: postId,
             userId: userId,
@@ -161,20 +149,19 @@ export const createPost = async (req: AuthRequest, res: Response) => {
             approved_at: null,
             user: user
         };
-
         const io = getIo(req);
         if (io) {
             io.emit('post_created', newPost);
             console.log(`📤 Emitted post_created for post ${postId}`);
         }
-
         res.status(201).json({
             success: true,
             message: 'Post created and awaiting admin approval',
             post: newPost,
             created_at: createdPost.created_at
         });
-    } catch (error) {
+    }
+    catch (error) {
         console.error('Error creating post:', error);
         res.status(500).json({
             success: false,
@@ -183,31 +170,27 @@ export const createPost = async (req: AuthRequest, res: Response) => {
         });
     }
 };
-
+exports.createPost = createPost;
 // ==============================================
 // GET POSTS
 // ==============================================
-export const getPosts = async (req: AuthRequest, res: Response) => {
+const getPosts = async (req, res) => {
     try {
-        const page = parseInt(req.query.page as string) || 1;
-        const limit = parseInt(req.query.limit as string) || 20;
+        const page = parseInt(req.query.page) || 1;
+        const limit = parseInt(req.query.limit) || 20;
         const offset = (page - 1) * limit;
         const userId = Number(req.user.id);
-
-        const search = req.query.search as string || '';
-        const filterType = req.query.filterType as string || 'all';
-        const sortBy = req.query.sortBy as string || 'latest';
-        const tab = req.query.tab as string || 'for-you';
-
-        const pool = await getSQLServerPool();
-
+        const search = req.query.search || '';
+        const filterType = req.query.filterType || 'all';
+        const sortBy = req.query.sortBy || 'latest';
+        const tab = req.query.tab || 'for-you';
+        const pool = await (0, database_1.getSQLServerPool)();
         // Build WHERE clause
-        let whereConditions: string[] = [
+        let whereConditions = [
             "p.status = 'approved'",
             "p.approval_status = 'approved'",
             "(p.is_reshare = 0 OR p.is_reshare = 1)"
         ];
-
         // Search filter
         if (search) {
             const searchPattern = `%${search}%`;
@@ -218,24 +201,19 @@ export const getPosts = async (req: AuthRequest, res: Response) => {
                 OR p.hashtags LIKE @search
             )`);
         }
-
         // Filter type: saved posts
         if (filterType === 'saved') {
             whereConditions.push(`sp.id IS NOT NULL`);
         }
-
         // Filter type: my posts
         if (filterType === 'my-posts') {
             whereConditions.push(`p.cuserid = @userId`);
         }
-
         // Following tab
         if (tab === 'following') {
             // Add followers table logic here if needed
         }
-
         const whereClause = whereConditions.join(' AND ');
-
         // Count query
         let countQuery = `
             SELECT COUNT(DISTINCT p.id) as total
@@ -244,7 +222,6 @@ export const getPosts = async (req: AuthRequest, res: Response) => {
             LEFT JOIN nt_saved_posts sp ON p.id = sp.post_id AND sp.cuserid = @userId
             WHERE ${whereClause}
         `;
-
         // ORDER BY
         let orderByClause = '';
         switch (sortBy) {
@@ -263,7 +240,6 @@ export const getPosts = async (req: AuthRequest, res: Response) => {
             default:
                 orderByClause = 'post_publish_time DESC, p.id DESC';
         }
-
         // Main query
         const query = `
             SELECT 
@@ -329,53 +305,47 @@ export const getPosts = async (req: AuthRequest, res: Response) => {
             OFFSET @offset ROWS
             FETCH NEXT @limit ROWS ONLY
         `;
-
         const request = pool.request();
-        request.input('userId', sql.Int, userId);
-        request.input('offset', sql.Int, offset);
-        request.input('limit', sql.Int, limit);
-
+        request.input('userId', mssql_1.default.Int, userId);
+        request.input('offset', mssql_1.default.Int, offset);
+        request.input('limit', mssql_1.default.Int, limit);
         if (search) {
             const searchPattern = `%${search}%`;
-            request.input('search', sql.NVarChar, searchPattern);
+            request.input('search', mssql_1.default.NVarChar, searchPattern);
         }
-
         const [countResult, postsResult] = await Promise.all([
             request.query(countQuery),
             request.query(query)
         ]);
-
         const total = countResult.recordset[0]?.total || 0;
-
         const postsWithMedia = postsResult.recordset.map(post => {
             let originalMediaUrls = [];
             let originalPollData = null;
             let originalHashtags = [];
-
             if (post.original_media_urls) {
                 try {
                     originalMediaUrls = JSON.parse(post.original_media_urls);
-                } catch {
+                }
+                catch {
                     originalMediaUrls = [];
                 }
             }
-
             if (post.original_poll_data) {
                 try {
                     originalPollData = JSON.parse(post.original_poll_data);
-                } catch {
+                }
+                catch {
                     originalPollData = null;
                 }
             }
-
             if (post.original_hashtags) {
                 try {
                     originalHashtags = JSON.parse(post.original_hashtags);
-                } catch {
+                }
+                catch {
                     originalHashtags = [];
                 }
             }
-
             const originalPost = post.original_id ? {
                 id: post.original_id,
                 content: post.original_content,
@@ -394,7 +364,6 @@ export const getPosts = async (req: AuthRequest, res: Response) => {
                 approved_at: post.original_approved_at,
                 display_date: post.original_approved_at || post.original_created_at
             } : null;
-
             return {
                 ...post,
                 mediaUrls: post.media_urls ? JSON.parse(post.media_urls) : [],
@@ -409,7 +378,6 @@ export const getPosts = async (req: AuthRequest, res: Response) => {
                 originalPost: originalPost
             };
         });
-
         res.json({
             success: true,
             posts: postsWithMedia,
@@ -418,7 +386,8 @@ export const getPosts = async (req: AuthRequest, res: Response) => {
             total: total,
             totalPages: Math.ceil(total / limit)
         });
-    } catch (error) {
+    }
+    catch (error) {
         console.error('Error getting posts:', error);
         res.status(500).json({
             success: false,
@@ -427,19 +396,18 @@ export const getPosts = async (req: AuthRequest, res: Response) => {
         });
     }
 };
-
+exports.getPosts = getPosts;
 // ==============================================
 // GET SINGLE POST
 // ==============================================
-export const getPost = async (req: AuthRequest, res: Response) => {
+const getPost = async (req, res) => {
     try {
         const { id } = req.params;
-        const userId = req.user!.id;
-        const pool = await getSQLServerPool();
-
+        const userId = req.user.id;
+        const pool = await (0, database_1.getSQLServerPool)();
         const result = await pool.request()
-            .input('postId', sql.Int, id)
-            .input('userId', sql.Int, userId)
+            .input('postId', mssql_1.default.Int, id)
+            .input('userId', mssql_1.default.Int, userId)
             .query(`
                 SELECT 
                     p.*, 
@@ -452,64 +420,57 @@ export const getPost = async (req: AuthRequest, res: Response) => {
                 JOIN users u ON p.cuserid = u.id
                 WHERE p.id = @postId
             `);
-
         const post = result.recordset[0];
-
         if (!post) {
             return res.status(404).json({ success: false, message: 'Post not found' });
         }
-
         post.mediaUrls = post.media_urls ? JSON.parse(post.media_urls) : [];
         post.hashtags = post.hashtags ? JSON.parse(post.hashtags) : [];
         post.pollData = post.poll_data ? JSON.parse(post.poll_data) : null;
         post.userLiked = post.user_liked === 1;
-
         const [likesResult, commentsResult] = await Promise.all([
             pool.request()
-                .input('postId', sql.Int, id)
+                .input('postId', mssql_1.default.Int, id)
                 .query('SELECT COUNT(*) as count FROM nt_reactions WHERE post_id = @postId'),
             pool.request()
-                .input('postId', sql.Int, id)
+                .input('postId', mssql_1.default.Int, id)
                 .query('SELECT COUNT(*) as count FROM nt_comments WHERE post_id = @postId')
         ]);
-
         post.likes_count = likesResult.recordset[0]?.count || 0;
         post.comments_count = commentsResult.recordset[0]?.count || 0;
-
         res.json({ success: true, post });
-    } catch (error) {
+    }
+    catch (error) {
         console.error('Error getting post:', error);
         res.status(500).json({ success: false, message: 'Error fetching post' });
     }
 };
-
+exports.getPost = getPost;
 // ==============================================
 // UPDATE POST
 // ==============================================
-export const updatePost = async (req: AuthRequest, res: Response) => {
+const updatePost = async (req, res) => {
     try {
         const { id } = req.params;
         const { content, mediaUrls } = req.body;
-        const userId = req.user!.id;
-        const pool = await getSQLServerPool();
-
+        const userId = req.user.id;
+        const pool = await (0, database_1.getSQLServerPool)();
         const result = await pool.request()
-            .input('content', sql.NVarChar, content)
-            .input('mediaUrls', sql.NVarChar, mediaUrls ? JSON.stringify(mediaUrls) : null)
-            .input('postId', sql.Int, id)
-            .input('userId', sql.Int, userId)
+            .input('content', mssql_1.default.NVarChar, content)
+            .input('mediaUrls', mssql_1.default.NVarChar, mediaUrls ? JSON.stringify(mediaUrls) : null)
+            .input('postId', mssql_1.default.Int, id)
+            .input('userId', mssql_1.default.Int, userId)
             .query(`
                 UPDATE nt_posts 
                 SET content = @content, media_urls = @mediaUrls 
                 WHERE id = @postId AND cuserid = @userId
             `);
-
         if (result.rowsAffected[0] === 0) {
-            throw new AppError('Post not found or unauthorized', 404);
+            throw new errorHandler_1.AppError('Post not found or unauthorized', 404);
         }
-
         res.json({ success: true, message: 'Post updated successfully' });
-    } catch (error) {
+    }
+    catch (error) {
         console.error('Error updating post:', error);
         res.status(500).json({
             success: false,
@@ -518,35 +479,31 @@ export const updatePost = async (req: AuthRequest, res: Response) => {
         });
     }
 };
-
+exports.updatePost = updatePost;
 // ==============================================
 // DELETE POST
 // ==============================================
-export const deletePost = async (req: AuthRequest, res: Response) => {
+const deletePost = async (req, res) => {
     try {
         const { id } = req.params;
-        const userId = req.user!.id;
-        const userRole = req.user!.role;
-        const pool = await getSQLServerPool();
-
+        const userId = req.user.id;
+        const userRole = req.user.role;
+        const pool = await (0, database_1.getSQLServerPool)();
         let query = 'DELETE FROM nt_posts WHERE id = @postId AND cuserid = @userId';
         let request = pool.request()
-            .input('postId', sql.Int, id)
-            .input('userId', sql.Int, userId);
-
+            .input('postId', mssql_1.default.Int, id)
+            .input('userId', mssql_1.default.Int, userId);
         if (userRole === 'admin') {
             query = 'DELETE FROM nt_posts WHERE id = @postId';
-            request = pool.request().input('postId', sql.Int, id);
+            request = pool.request().input('postId', mssql_1.default.Int, id);
         }
-
         const result = await request.query(query);
-
         if (result.rowsAffected[0] === 0) {
-            throw new AppError('Post not found or unauthorized', 404);
+            throw new errorHandler_1.AppError('Post not found or unauthorized', 404);
         }
-
         res.json({ success: true, message: 'Post deleted successfully' });
-    } catch (error) {
+    }
+    catch (error) {
         console.error('Error deleting post:', error);
         res.status(500).json({
             success: false,
@@ -555,23 +512,22 @@ export const deletePost = async (req: AuthRequest, res: Response) => {
         });
     }
 };
-
+exports.deletePost = deletePost;
 // ==============================================
 // GET COMMENTS
 // ==============================================
-export const getComments = async (req: AuthRequest, res: Response) => {
+const getComments = async (req, res) => {
     try {
         const { id } = req.params;
-        const page = parseInt(req.query.page as string) || 1;
-        const limit = parseInt(req.query.limit as string) || 20;
+        const page = parseInt(req.query.page) || 1;
+        const limit = parseInt(req.query.limit) || 20;
         const offset = (page - 1) * limit;
         const userId = req.user.id;
-        const pool = await getSQLServerPool();
-
+        const pool = await (0, database_1.getSQLServerPool)();
         const result = await pool.request()
-            .input('postId', sql.Int, id)
-            .input('limit', sql.Int, limit)
-            .input('offset', sql.Int, offset)
+            .input('postId', mssql_1.default.Int, id)
+            .input('limit', mssql_1.default.Int, limit)
+            .input('offset', mssql_1.default.Int, offset)
             .query(`
                 SELECT 
                     c.*, 
@@ -585,31 +541,28 @@ export const getComments = async (req: AuthRequest, res: Response) => {
                 OFFSET @offset ROWS
                 FETCH NEXT @limit ROWS ONLY
             `);
-
         const comments = result.recordset;
-
         const commentsWithLikes = await Promise.all(comments.map(async (comment) => {
             const likedResult = await pool.request()
-                .input('userId', sql.Int, userId)
-                .input('commentId', sql.Int, comment.id)
+                .input('userId', mssql_1.default.Int, userId)
+                .input('commentId', mssql_1.default.Int, comment.id)
                 .query('SELECT id FROM nt_reactions WHERE cuserid = @userId AND comment_id = @commentId');
-
             return {
                 ...comment,
                 userLiked: likedResult.recordset.length > 0,
                 likesCount: comment.likes_count || 0,
-                created_at: comment.created_at ? moment(comment.created_at).tz('Asia/Kolkata').format('YYYY-MM-DD HH:mm:ss') : null,
-                updated_at: comment.updated_at ? moment(comment.updated_at).tz('Asia/Kolkata').format('YYYY-MM-DD HH:mm:ss') : null
+                created_at: comment.created_at ? (0, moment_timezone_1.default)(comment.created_at).tz('Asia/Kolkata').format('YYYY-MM-DD HH:mm:ss') : null,
+                updated_at: comment.updated_at ? (0, moment_timezone_1.default)(comment.updated_at).tz('Asia/Kolkata').format('YYYY-MM-DD HH:mm:ss') : null
             };
         }));
-
         res.json({
             success: true,
             comments: commentsWithLikes,
             page: Number(page),
             limit: Number(limit)
         });
-    } catch (error) {
+    }
+    catch (error) {
         console.error('Error getting comments:', error);
         res.status(500).json({
             success: false,
@@ -618,51 +571,44 @@ export const getComments = async (req: AuthRequest, res: Response) => {
         });
     }
 };
-
+exports.getComments = getComments;
 // ==============================================
 // ADD COMMENT
 // ==============================================
-export const addComment = async (req: AuthRequest, res: Response) => {
+const addComment = async (req, res) => {
     try {
         const { postId, content, parentCommentId } = req.body;
-        const userId = req.user!.id;
-        const pool = await getSQLServerPool();
-
+        const userId = req.user.id;
+        const pool = await (0, database_1.getSQLServerPool)();
         const result = await pool.request()
-            .input('postId', sql.Int, postId)
-            .input('userId', sql.Int, userId)
-            .input('parentCommentId', sql.Int, parentCommentId || null)
-            .input('content', sql.NVarChar, content)
+            .input('postId', mssql_1.default.Int, postId)
+            .input('userId', mssql_1.default.Int, userId)
+            .input('parentCommentId', mssql_1.default.Int, parentCommentId || null)
+            .input('content', mssql_1.default.NVarChar, content)
             .query(`
                 INSERT INTO nt_comments (post_id, cuserid, parent_comment_id, content, status) 
                 OUTPUT INSERTED.id
                 VALUES (@postId, @userId, @parentCommentId, @content, 'active')
             `);
-
         const commentId = result.recordset[0]?.id;
-
         const commentResult = await pool.request()
-            .input('commentId', sql.Int, commentId)
+            .input('commentId', mssql_1.default.Int, commentId)
             .query(`
                 SELECT c.*, u.cuser_name as username, u.cuser_name as full_name, u.cprofile_image_name as avatar_url 
                 FROM nt_comments c 
                 JOIN users u ON c.cuserid = u.id 
                 WHERE c.id = @commentId
             `);
-
         const comment = commentResult.recordset[0];
-
         const countResult = await pool.request()
-            .input('postId', sql.Int, postId)
+            .input('postId', mssql_1.default.Int, postId)
             .query('SELECT comments_count FROM nt_posts WHERE id = @postId');
         const newCommentsCount = countResult.recordset[0]?.comments_count || 0;
-
         res.json({
             success: true,
             comment: comment,
             commentsCount: newCommentsCount
         });
-
         const io = req.app.get('io');
         if (io) {
             const eventData = {
@@ -674,42 +620,38 @@ export const addComment = async (req: AuthRequest, res: Response) => {
             io.to(`post_${postId}`).emit('new_comment', eventData);
             console.log(`📤 Emitted new_comment for post ${postId}`);
         }
-    } catch (error) {
+    }
+    catch (error) {
         console.error('Error adding comment:', error);
         res.status(500).json({ success: false, message: 'Failed to add comment' });
     }
 };
-
+exports.addComment = addComment;
 // ==============================================
 // DELETE COMMENT
 // ==============================================
-export const deleteComment = async (req: AuthRequest, res: Response) => {
+const deleteComment = async (req, res) => {
     try {
         const { id } = req.params;
-        const userId = req.user!.id;
-        const pool = await getSQLServerPool();
-
+        const userId = req.user.id;
+        const pool = await (0, database_1.getSQLServerPool)();
         const commentResult = await pool.request()
-            .input('commentId', sql.Int, id)
-            .input('userId', sql.Int, userId)
+            .input('commentId', mssql_1.default.Int, id)
+            .input('userId', mssql_1.default.Int, userId)
             .query('SELECT post_id FROM nt_comments WHERE id = @commentId AND cuserid = @userId');
-
         if (commentResult.recordset.length === 0) {
-            throw new AppError('Comment not found or unauthorized', 404);
+            throw new errorHandler_1.AppError('Comment not found or unauthorized', 404);
         }
-
         const postId = commentResult.recordset[0].post_id;
-
         await pool.request()
-            .input('commentId', sql.Int, id)
+            .input('commentId', mssql_1.default.Int, id)
             .query('UPDATE nt_comments SET status = "deleted" WHERE id = @commentId');
-
         await pool.request()
-            .input('postId', sql.Int, postId)
+            .input('postId', mssql_1.default.Int, postId)
             .query('UPDATE nt_posts SET comments_count = comments_count - 1 WHERE id = @postId');
-
         res.json({ success: true, message: 'Comment deleted successfully' });
-    } catch (error) {
+    }
+    catch (error) {
         console.error('Error deleting comment:', error);
         res.status(500).json({
             success: false,
@@ -718,55 +660,47 @@ export const deleteComment = async (req: AuthRequest, res: Response) => {
         });
     }
 };
-
+exports.deleteComment = deleteComment;
 // ==============================================
 // TOGGLE LIKE
 // ==============================================
-export const addReaction = async (req: AuthRequest, res: Response) => {
+const addReaction = async (req, res) => {
     try {
         const { postId } = req.body;
         const userId = req.user.id;
-        const pool = await getSQLServerPool();
-
+        const pool = await (0, database_1.getSQLServerPool)();
         console.log('❤️ Toggling like for post:', postId, 'User:', userId);
-
         const existingResult = await pool.request()
-            .input('userId', sql.Int, userId)
-            .input('postId', sql.Int, postId)
+            .input('userId', mssql_1.default.Int, userId)
+            .input('postId', mssql_1.default.Int, postId)
             .query('SELECT id FROM nt_reactions WHERE cuserid = @userId AND post_id = @postId');
-
         let isLiked = false;
         let likesCount = 0;
-
         if (existingResult.recordset.length > 0) {
             await pool.request()
-                .input('userId', sql.Int, userId)
-                .input('postId', sql.Int, postId)
+                .input('userId', mssql_1.default.Int, userId)
+                .input('postId', mssql_1.default.Int, postId)
                 .query('DELETE FROM nt_reactions WHERE cuserid = @userId AND post_id = @postId');
-
             await pool.request()
-                .input('postId', sql.Int, postId)
+                .input('postId', mssql_1.default.Int, postId)
                 .query('UPDATE nt_posts SET likes_count = likes_count - 1 WHERE id = @postId');
             isLiked = false;
-        } else {
+        }
+        else {
             await pool.request()
-                .input('userId', sql.Int, userId)
-                .input('postId', sql.Int, postId)
+                .input('userId', mssql_1.default.Int, userId)
+                .input('postId', mssql_1.default.Int, postId)
                 .query('INSERT INTO nt_reactions (cuserid, post_id, type) VALUES (@userId, @postId, "like")');
-
             await pool.request()
-                .input('postId', sql.Int, postId)
+                .input('postId', mssql_1.default.Int, postId)
                 .query('UPDATE nt_posts SET likes_count = likes_count + 1 WHERE id = @postId');
             isLiked = true;
         }
-
         const countResult = await pool.request()
-            .input('postId', sql.Int, postId)
+            .input('postId', mssql_1.default.Int, postId)
             .query('SELECT likes_count FROM nt_posts WHERE id = @postId');
         likesCount = countResult.recordset[0]?.likes_count || 0;
-
         console.log(`📊 Updated likes count for post ${postId}: ${likesCount}`);
-
         const io = req.app.get('io');
         if (io) {
             const eventData = {
@@ -780,129 +714,114 @@ export const addReaction = async (req: AuthRequest, res: Response) => {
             io.emit('reaction_updated_global', eventData);
             console.log(`📤 Emitted reaction_updated for post ${postId}`);
         }
-
         res.json({
             success: true,
             likes_count: likesCount,
             isLiked: isLiked
         });
-    } catch (error) {
+    }
+    catch (error) {
         console.error('Error toggling like:', error);
         res.status(500).json({ success: false, message: 'Failed to toggle like' });
     }
 };
-
+exports.addReaction = addReaction;
 // ==============================================
 // ADD COMMENT REACTION
 // ==============================================
-export const addCommentReaction = async (req: AuthRequest, res: Response) => {
+const addCommentReaction = async (req, res) => {
     try {
         const commentId = parseInt(req.params.id);
-        const userId = req.user!.id;
-        const pool = await getSQLServerPool();
-
+        const userId = req.user.id;
+        const pool = await (0, database_1.getSQLServerPool)();
         console.log('❤️ Toggling like for comment:', commentId, 'User:', userId);
-
         const commentExistsResult = await pool.request()
-            .input('commentId', sql.Int, commentId)
+            .input('commentId', mssql_1.default.Int, commentId)
             .query('SELECT id FROM nt_comments WHERE id = @commentId');
-
         if (commentExistsResult.recordset.length === 0) {
             return res.status(404).json({ success: false, message: 'Comment not found' });
         }
-
         const existingResult = await pool.request()
-            .input('userId', sql.Int, userId)
-            .input('commentId', sql.Int, commentId)
+            .input('userId', mssql_1.default.Int, userId)
+            .input('commentId', mssql_1.default.Int, commentId)
             .query('SELECT id FROM nt_reactions WHERE cuserid = @userId AND comment_id = @commentId');
-
         if (existingResult.recordset.length > 0) {
             await pool.request()
-                .input('userId', sql.Int, userId)
-                .input('commentId', sql.Int, commentId)
+                .input('userId', mssql_1.default.Int, userId)
+                .input('commentId', mssql_1.default.Int, commentId)
                 .query('DELETE FROM nt_reactions WHERE cuserid = @userId AND comment_id = @commentId');
-
             await pool.request()
-                .input('commentId', sql.Int, commentId)
+                .input('commentId', mssql_1.default.Int, commentId)
                 .query('UPDATE nt_comments SET likes_count = likes_count - 1 WHERE id = @commentId');
-
             const countResult = await pool.request()
-                .input('commentId', sql.Int, commentId)
+                .input('commentId', mssql_1.default.Int, commentId)
                 .query('SELECT likes_count FROM nt_comments WHERE id = @commentId');
-
             res.json({
                 success: true,
                 likes_count: countResult.recordset[0]?.likes_count || 0,
                 isLiked: false
             });
-        } else {
+        }
+        else {
             await pool.request()
-                .input('userId', sql.Int, userId)
-                .input('commentId', sql.Int, commentId)
+                .input('userId', mssql_1.default.Int, userId)
+                .input('commentId', mssql_1.default.Int, commentId)
                 .query('INSERT INTO nt_reactions (cuserid, comment_id, type) VALUES (@userId, @commentId, "like")');
-
             await pool.request()
-                .input('commentId', sql.Int, commentId)
+                .input('commentId', mssql_1.default.Int, commentId)
                 .query('UPDATE nt_comments SET likes_count = likes_count + 1 WHERE id = @commentId');
-
             const countResult = await pool.request()
-                .input('commentId', sql.Int, commentId)
+                .input('commentId', mssql_1.default.Int, commentId)
                 .query('SELECT likes_count FROM nt_comments WHERE id = @commentId');
-
             res.json({
                 success: true,
                 likes_count: countResult.recordset[0]?.likes_count || 0,
                 isLiked: true
             });
         }
-    } catch (error) {
+    }
+    catch (error) {
         console.error('Error toggling comment like:', error);
         res.status(500).json({ success: false, message: 'Failed to toggle like' });
     }
 };
-
+exports.addCommentReaction = addCommentReaction;
 // ==============================================
 // REMOVE COMMENT REACTION
 // ==============================================
-export const removeCommentReaction = async (req: AuthRequest, res: Response) => {
+const removeCommentReaction = async (req, res) => {
     try {
         const commentId = parseInt(req.params.id);
-        const userId = req.user!.id;
-        const pool = await getSQLServerPool();
-
+        const userId = req.user.id;
+        const pool = await (0, database_1.getSQLServerPool)();
         console.log('👎 Removing like for comment:', commentId, 'User:', userId);
-
         const existingResult = await pool.request()
-            .input('userId', sql.Int, userId)
-            .input('commentId', sql.Int, commentId)
+            .input('userId', mssql_1.default.Int, userId)
+            .input('commentId', mssql_1.default.Int, commentId)
             .query('SELECT id FROM nt_reactions WHERE cuserid = @userId AND comment_id = @commentId');
-
         if (existingResult.recordset.length === 0) {
             return res.status(404).json({
                 success: false,
                 message: 'Reaction not found'
             });
         }
-
         await pool.request()
-            .input('userId', sql.Int, userId)
-            .input('commentId', sql.Int, commentId)
+            .input('userId', mssql_1.default.Int, userId)
+            .input('commentId', mssql_1.default.Int, commentId)
             .query('DELETE FROM nt_reactions WHERE cuserid = @userId AND comment_id = @commentId');
-
         await pool.request()
-            .input('commentId', sql.Int, commentId)
+            .input('commentId', mssql_1.default.Int, commentId)
             .query('UPDATE nt_comments SET likes_count = likes_count - 1 WHERE id = @commentId');
-
         const countResult = await pool.request()
-            .input('commentId', sql.Int, commentId)
+            .input('commentId', mssql_1.default.Int, commentId)
             .query('SELECT likes_count FROM nt_comments WHERE id = @commentId');
-
         res.json({
             success: true,
             likes_count: countResult.recordset[0]?.likes_count || 0,
             isLiked: false
         });
-    } catch (error) {
+    }
+    catch (error) {
         console.error('Error removing comment reaction:', error);
         res.status(500).json({
             success: false,
@@ -910,37 +829,32 @@ export const removeCommentReaction = async (req: AuthRequest, res: Response) => 
         });
     }
 };
-
+exports.removeCommentReaction = removeCommentReaction;
 // ==============================================
 // REMOVE REACTION
 // ==============================================
-export const removeReaction = async (req: AuthRequest, res: Response) => {
+const removeReaction = async (req, res) => {
     try {
         const { id } = req.params;
-        const userId = req.user!.id;
-        const pool = await getSQLServerPool();
-
+        const userId = req.user.id;
+        const pool = await (0, database_1.getSQLServerPool)();
         const reactionResult = await pool.request()
-            .input('reactionId', sql.Int, id)
-            .input('userId', sql.Int, userId)
+            .input('reactionId', mssql_1.default.Int, id)
+            .input('userId', mssql_1.default.Int, userId)
             .query('SELECT post_id FROM nt_reactions WHERE id = @reactionId AND cuserid = @userId');
-
         if (reactionResult.recordset.length === 0) {
-            throw new AppError('Reaction not found', 404);
+            throw new errorHandler_1.AppError('Reaction not found', 404);
         }
-
         const postId = reactionResult.recordset[0].post_id;
-
         await pool.request()
-            .input('reactionId', sql.Int, id)
+            .input('reactionId', mssql_1.default.Int, id)
             .query('DELETE FROM nt_reactions WHERE id = @reactionId');
-
         await pool.request()
-            .input('postId', sql.Int, postId)
+            .input('postId', mssql_1.default.Int, postId)
             .query('UPDATE nt_posts SET likes_count = likes_count - 1 WHERE id = @postId');
-
         res.json({ success: true, message: 'Reaction removed' });
-    } catch (error) {
+    }
+    catch (error) {
         console.error('Error removing reaction:', error);
         res.status(500).json({
             success: false,
@@ -949,25 +863,24 @@ export const removeReaction = async (req: AuthRequest, res: Response) => {
         });
     }
 };
-
+exports.removeReaction = removeReaction;
 // ==============================================
 // GET REACTIONS
 // ==============================================
-export const getReactions = async (req: AuthRequest, res: Response) => {
+const getReactions = async (req, res) => {
     try {
         const { id } = req.params;
-        const pool = await getSQLServerPool();
-
+        const pool = await (0, database_1.getSQLServerPool)();
         const result = await pool.request()
-            .input('postId', sql.Int, id)
+            .input('postId', mssql_1.default.Int, id)
             .query(`
                 SELECT r.type, COUNT(*) as count 
                 FROM nt_reactions r
                 WHERE r.post_id = @postId
                 GROUP BY r.type            `);
-
         res.json({ success: true, reactions: result.recordset });
-    } catch (error) {
+    }
+    catch (error) {
         console.error('Error getting reactions:', error);
         res.status(500).json({
             success: false,
@@ -976,21 +889,20 @@ export const getReactions = async (req: AuthRequest, res: Response) => {
         });
     }
 };
-
+exports.getReactions = getReactions;
 // ==============================================
 // SHARE POST
 // ==============================================
-export const sharePost = async (req: AuthRequest, res: Response) => {
+const sharePost = async (req, res) => {
     try {
         const { id } = req.params;
-        const pool = await getSQLServerPool();
-
+        const pool = await (0, database_1.getSQLServerPool)();
         await pool.request()
-            .input('postId', sql.Int, id)
+            .input('postId', mssql_1.default.Int, id)
             .query('UPDATE nt_posts SET shares_count = shares_count + 1 WHERE id = @postId');
-
         res.json({ success: true, message: 'Post shared' });
-    } catch (error) {
+    }
+    catch (error) {
         console.error('Error sharing post:', error);
         res.status(500).json({
             success: false,
@@ -999,22 +911,21 @@ export const sharePost = async (req: AuthRequest, res: Response) => {
         });
     }
 };
-
+exports.sharePost = sharePost;
 // ==============================================
 // GET FEED
 // ==============================================
-export const getFeed = async (req: AuthRequest, res: Response) => {
+const getFeed = async (req, res) => {
     try {
-        const userId = req.user!.id;
-        const page = parseInt(req.query.page as string) || 1;
-        const limit = parseInt(req.query.limit as string) || 20;
+        const userId = req.user.id;
+        const page = parseInt(req.query.page) || 1;
+        const limit = parseInt(req.query.limit) || 20;
         const offset = (page - 1) * limit;
-        const pool = await getSQLServerPool();
-
+        const pool = await (0, database_1.getSQLServerPool)();
         const result = await pool.request()
-            .input('userId', sql.Int, userId)
-            .input('limit', sql.Int, limit)
-            .input('offset', sql.Int, offset)
+            .input('userId', mssql_1.default.Int, userId)
+            .input('limit', mssql_1.default.Int, limit)
+            .input('offset', mssql_1.default.Int, offset)
             .query(`
                 SELECT 
                     p.id, p.cuserid, p.content, p.type, p.media_urls, p.hashtags, p.poll_data,
@@ -1039,7 +950,6 @@ export const getFeed = async (req: AuthRequest, res: Response) => {
                 OFFSET @offset ROWS
                 FETCH NEXT @limit ROWS ONLY
             `);
-
         const posts = result.recordset.map(post => ({
             ...post,
             mediaUrls: post.media_urls ? JSON.parse(post.media_urls) : [],
@@ -1059,14 +969,14 @@ export const getFeed = async (req: AuthRequest, res: Response) => {
                 mediaUrls: post.original_media_urls ? JSON.parse(post.original_media_urls) : []
             } : null
         }));
-
         res.json({
             success: true,
             posts: posts,
             page,
             limit
         });
-    } catch (error) {
+    }
+    catch (error) {
         console.error('Error getting feed:', error);
         res.status(500).json({
             success: false,
@@ -1075,35 +985,32 @@ export const getFeed = async (req: AuthRequest, res: Response) => {
         });
     }
 };
-
+exports.getFeed = getFeed;
 // ==============================================
 // SAVE POST
 // ==============================================
-export const savePost = async (req: AuthRequest, res: Response) => {
+const savePost = async (req, res) => {
     try {
         const { id } = req.params;
-        const userId = req.user!.id;
-        const pool = await getSQLServerPool();
-
+        const userId = req.user.id;
+        const pool = await (0, database_1.getSQLServerPool)();
         const existingResult = await pool.request()
-            .input('userId', sql.Int, userId)
-            .input('postId', sql.Int, id)
+            .input('userId', mssql_1.default.Int, userId)
+            .input('postId', mssql_1.default.Int, id)
             .query('SELECT id FROM nt_saved_posts WHERE cuserid = @userId AND post_id = @postId');
-
         if (existingResult.recordset.length > 0) {
             return res.status(400).json({
                 success: false,
                 message: 'Post already saved'
             });
         }
-
         await pool.request()
-            .input('userId', sql.Int, userId)
-            .input('postId', sql.Int, id)
+            .input('userId', mssql_1.default.Int, userId)
+            .input('postId', mssql_1.default.Int, id)
             .query('INSERT INTO nt_saved_posts (cuserid, post_id) VALUES (@userId, @postId)');
-
         res.json({ success: true, message: 'Post saved' });
-    } catch (error) {
+    }
+    catch (error) {
         console.error('Error saving post:', error);
         res.status(500).json({
             success: false,
@@ -1112,23 +1019,22 @@ export const savePost = async (req: AuthRequest, res: Response) => {
         });
     }
 };
-
+exports.savePost = savePost;
 // ==============================================
 // UNSAVE POST
 // ==============================================
-export const unsavePost = async (req: AuthRequest, res: Response) => {
+const unsavePost = async (req, res) => {
     try {
         const { id } = req.params;
-        const userId = req.user!.id;
-        const pool = await getSQLServerPool();
-
+        const userId = req.user.id;
+        const pool = await (0, database_1.getSQLServerPool)();
         await pool.request()
-            .input('userId', sql.Int, userId)
-            .input('postId', sql.Int, id)
+            .input('userId', mssql_1.default.Int, userId)
+            .input('postId', mssql_1.default.Int, id)
             .query('DELETE FROM nt_saved_posts WHERE cuserid = @userId AND post_id = @postId');
-
         res.json({ success: true, message: 'Post unsaved' });
-    } catch (error) {
+    }
+    catch (error) {
         console.error('Error unsaving post:', error);
         res.status(500).json({
             success: false,
@@ -1137,22 +1043,21 @@ export const unsavePost = async (req: AuthRequest, res: Response) => {
         });
     }
 };
-
+exports.unsavePost = unsavePost;
 // ==============================================
 // GET SAVED POSTS
 // ==============================================
-export const getSavedPosts = async (req: AuthRequest, res: Response) => {
+const getSavedPosts = async (req, res) => {
     try {
-        const userId = req.user!.id;
-        const page = parseInt(req.query.page as string) || 1;
-        const limit = parseInt(req.query.limit as string) || 20;
+        const userId = req.user.id;
+        const page = parseInt(req.query.page) || 1;
+        const limit = parseInt(req.query.limit) || 20;
         const offset = (page - 1) * limit;
-        const pool = await getSQLServerPool();
-
+        const pool = await (0, database_1.getSQLServerPool)();
         const result = await pool.request()
-            .input('userId', sql.Int, userId)
-            .input('limit', sql.Int, limit)
-            .input('offset', sql.Int, offset)
+            .input('userId', mssql_1.default.Int, userId)
+            .input('limit', mssql_1.default.Int, limit)
+            .input('offset', mssql_1.default.Int, offset)
             .query(`
                 SELECT p.*, u.cuser_name as username, u.cuser_name as full_name, u.cprofile_image_name as avatar_url
                 FROM nt_saved_posts sp
@@ -1163,21 +1068,20 @@ export const getSavedPosts = async (req: AuthRequest, res: Response) => {
                 OFFSET @offset ROWS
                 FETCH NEXT @limit ROWS ONLY
             `);
-
         const posts = result.recordset.map(post => ({
             ...post,
             mediaUrls: post.media_urls ? JSON.parse(post.media_urls) : [],
             hashtags: post.hashtags ? JSON.parse(post.hashtags) : [],
             pollData: post.poll_data ? JSON.parse(post.poll_data) : null
         }));
-
         res.json({
             success: true,
             posts: posts,
             page,
             limit
         });
-    } catch (error) {
+    }
+    catch (error) {
         console.error('Error getting saved posts:', error);
         res.status(500).json({
             success: false,
@@ -1186,29 +1090,28 @@ export const getSavedPosts = async (req: AuthRequest, res: Response) => {
         });
     }
 };
-
+exports.getSavedPosts = getSavedPosts;
 // ==============================================
 // REPORT POST
 // ==============================================
-export const reportPost = async (req: AuthRequest, res: Response) => {
+const reportPost = async (req, res) => {
     try {
         const { id } = req.params;
         const { reason, description } = req.body;
-        const userId = req.user!.id;
-        const pool = await getSQLServerPool();
-
+        const userId = req.user.id;
+        const pool = await (0, database_1.getSQLServerPool)();
         await pool.request()
-            .input('postId', sql.Int, id)
-            .input('userId', sql.Int, userId)
-            .input('reason', sql.NVarChar, reason)
-            .input('description', sql.NVarChar, description)
+            .input('postId', mssql_1.default.Int, id)
+            .input('userId', mssql_1.default.Int, userId)
+            .input('reason', mssql_1.default.NVarChar, reason)
+            .input('description', mssql_1.default.NVarChar, description)
             .query(`
                 INSERT INTO nt_reports (post_id, cuserid, reason, description) 
                 VALUES (@postId, @userId, @reason, @description)
             `);
-
         res.json({ success: true, message: 'Post reported' });
-    } catch (error) {
+    }
+    catch (error) {
         console.error('Error reporting post:', error);
         res.status(500).json({
             success: false,
@@ -1217,17 +1120,17 @@ export const reportPost = async (req: AuthRequest, res: Response) => {
         });
     }
 };
-
+exports.reportPost = reportPost;
 // ==============================================
 // GET TRENDING HASHTAGS
 // ==============================================
-export const getTrendingHashtags = async (req: AuthRequest, res: Response) => {
+const getTrendingHashtags = async (req, res) => {
     let period = 'day';
     try {
-        const queryPeriod = (req.query as any).period;
-        if (queryPeriod) period = queryPeriod;
-        const pool = await getSQLServerPool();
-
+        const queryPeriod = req.query.period;
+        if (queryPeriod)
+            period = queryPeriod;
+        const pool = await (0, database_1.getSQLServerPool)();
         const result = await pool.request()
             .query(`
                 SELECT 
@@ -1240,13 +1143,13 @@ export const getTrendingHashtags = async (req: AuthRequest, res: Response) => {
                 GROUP BY h.id, h.name
                 ORDER BY post_count DESC
             `);
-
         res.json({
             success: true,
             trending: result.recordset || [],
             period
         });
-    } catch (error) {
+    }
+    catch (error) {
         console.error('Error getting trending hashtags:', error);
         res.json({
             success: true,
@@ -1255,19 +1158,18 @@ export const getTrendingHashtags = async (req: AuthRequest, res: Response) => {
         });
     }
 };
-
+exports.getTrendingHashtags = getTrendingHashtags;
 // ==============================================
 // GET POSTS SIMPLE
 // ==============================================
-export const getPostsSimple = async (req: AuthRequest, res: Response) => {
+const getPostsSimple = async (req, res) => {
     try {
         const { page = 1, limit = 20 } = req.query;
         const offset = (Number(page) - 1) * Number(limit);
-        const pool = await getSQLServerPool();
-
+        const pool = await (0, database_1.getSQLServerPool)();
         const result = await pool.request()
-            .input('limit', sql.Int, Number(limit))
-            .input('offset', sql.Int, offset)
+            .input('limit', mssql_1.default.Int, Number(limit))
+            .input('offset', mssql_1.default.Int, offset)
             .query(`
                 SELECT p.*, u.cuser_name as username, u.cuser_name as full_name, u.cprofile_image_name as avatar_url
                 FROM nt_posts p
@@ -1277,14 +1179,14 @@ export const getPostsSimple = async (req: AuthRequest, res: Response) => {
                 OFFSET @offset ROWS
                 FETCH NEXT @limit ROWS ONLY
             `);
-
         res.json({
             success: true,
             posts: result.recordset,
             page: Number(page),
             limit: Number(limit)
         });
-    } catch (error) {
+    }
+    catch (error) {
         console.error('Error getting posts:', error);
         res.status(500).json({
             success: false,
@@ -1293,48 +1195,42 @@ export const getPostsSimple = async (req: AuthRequest, res: Response) => {
         });
     }
 };
-
+exports.getPostsSimple = getPostsSimple;
 // ==============================================
 // VOTE POLL
 // ==============================================
-export const votePoll = async (req: AuthRequest, res: Response) => {
+const votePoll = async (req, res) => {
     try {
         console.log('=== VOTE POLL FUNCTION STARTED ===');
-
         const { id } = req.params;
         let { optionId } = req.body;
-        const userId = req.user!.id;
-        const pool = await getSQLServerPool();
-
+        const userId = req.user.id;
+        const pool = await (0, database_1.getSQLServerPool)();
         const numericOptionId = Number(optionId);
-
         if (isNaN(numericOptionId)) {
             return res.status(400).json({
                 success: false,
                 message: 'Invalid option ID'
             });
         }
-
         const postResult = await pool.request()
-            .input('postId', sql.Int, id)
+            .input('postId', mssql_1.default.Int, id)
             .query('SELECT * FROM nt_posts WHERE id = @postId AND type = "poll"');
-
         const post = postResult.recordset[0];
-
         if (!post) {
             return res.status(404).json({
                 success: false,
                 message: 'Poll not found'
             });
         }
-
         let pollData = null;
         if (post.poll_data) {
             try {
                 pollData = typeof post.poll_data === 'string'
                     ? JSON.parse(post.poll_data)
                     : post.poll_data;
-            } catch (parseError) {
+            }
+            catch (parseError) {
                 console.error('Error parsing poll data:', parseError);
                 return res.status(500).json({
                     success: false,
@@ -1342,93 +1238,81 @@ export const votePoll = async (req: AuthRequest, res: Response) => {
                 });
             }
         }
-
         if (!pollData || !pollData.options || !Array.isArray(pollData.options)) {
             return res.status(400).json({
                 success: false,
                 message: 'Poll data is corrupted'
             });
         }
-
         if (pollData.expiresAt && new Date(pollData.expiresAt) < new Date()) {
             return res.status(400).json({
                 success: false,
                 message: 'This poll has ended. No more votes can be cast.'
             });
         }
-
-        const optionIndex = pollData.options.findIndex((opt: any) => Number(opt.id) === numericOptionId);
-
+        const optionIndex = pollData.options.findIndex((opt) => Number(opt.id) === numericOptionId);
         if (optionIndex === -1) {
             return res.status(404).json({
                 success: false,
                 message: `Option not found`
             });
         }
-
         const existingVoteResult = await pool.request()
-            .input('postId', sql.Int, id)
-            .input('userId', sql.Int, userId)
+            .input('postId', mssql_1.default.Int, id)
+            .input('userId', mssql_1.default.Int, userId)
             .query('SELECT id, option_id FROM nt_poll_votes WHERE post_id = @postId AND cuserid = @userId');
-
         let isNewVote = false;
         let voteChanged = false;
-
         if (existingVoteResult.recordset.length > 0) {
             const previousOptionId = existingVoteResult.recordset[0].option_id;
-
             if (Number(previousOptionId) !== numericOptionId) {
-                const prevOptionIndex = pollData.options.findIndex((opt: any) => Number(opt.id) === Number(previousOptionId));
+                const prevOptionIndex = pollData.options.findIndex((opt) => Number(opt.id) === Number(previousOptionId));
                 if (prevOptionIndex !== -1) {
                     pollData.options[prevOptionIndex].votes = Math.max(0, (pollData.options[prevOptionIndex].votes || 0) - 1);
                 }
                 voteChanged = true;
             }
-
             await pool.request()
-                .input('postId', sql.Int, id)
-                .input('userId', sql.Int, userId)
-                .input('optionId', sql.Int, numericOptionId)
+                .input('postId', mssql_1.default.Int, id)
+                .input('userId', mssql_1.default.Int, userId)
+                .input('optionId', mssql_1.default.Int, numericOptionId)
                 .query('UPDATE nt_poll_votes SET option_id = @optionId WHERE post_id = @postId AND cuserid = @userId');
-        } else {
+        }
+        else {
             await pool.request()
-                .input('postId', sql.Int, id)
-                .input('userId', sql.Int, userId)
-                .input('optionId', sql.Int, numericOptionId)
+                .input('postId', mssql_1.default.Int, id)
+                .input('userId', mssql_1.default.Int, userId)
+                .input('optionId', mssql_1.default.Int, numericOptionId)
                 .query('INSERT INTO nt_poll_votes (post_id, cuserid, option_id) VALUES (@postId, @userId, @optionId)');
             isNewVote = true;
         }
-
         if (isNewVote || voteChanged) {
             pollData.options[optionIndex].votes = (pollData.options[optionIndex].votes || 0) + 1;
         }
-
         const totalVotesResult = await pool.request()
-            .input('postId', sql.Int, id)
+            .input('postId', mssql_1.default.Int, id)
             .query('SELECT COUNT(*) as total FROM nt_poll_votes WHERE post_id = @postId');
         const actualTotalVotes = totalVotesResult.recordset[0]?.total || 0;
         pollData.totalVotes = actualTotalVotes;
-
         await pool.request()
-            .input('postId', sql.Int, id)
-            .input('pollData', sql.NVarChar, JSON.stringify(pollData))
+            .input('postId', mssql_1.default.Int, id)
+            .input('pollData', mssql_1.default.NVarChar, JSON.stringify(pollData))
             .query('UPDATE nt_posts SET poll_data = @pollData WHERE id = @postId');
-
         const finalVoteResult = await pool.request()
-            .input('postId', sql.Int, id)
-            .input('userId', sql.Int, userId)
+            .input('postId', mssql_1.default.Int, id)
+            .input('userId', mssql_1.default.Int, userId)
             .query('SELECT option_id FROM nt_poll_votes WHERE post_id = @postId AND cuserid = @userId');
         const userVotedOption = finalVoteResult.recordset[0]?.option_id;
-
         let message = '';
         if (isNewVote) {
             message = 'Vote recorded successfully!';
-        } else if (voteChanged) {
+        }
+        else if (voteChanged) {
             message = 'Your vote has been changed successfully!';
-        } else {
+        }
+        else {
             message = 'Your vote has been updated!';
         }
-
         res.json({
             success: true,
             pollData: pollData,
@@ -1438,7 +1322,6 @@ export const votePoll = async (req: AuthRequest, res: Response) => {
             voteChanged: voteChanged,
             totalVotes: actualTotalVotes
         });
-
         const io = req.app.get('io');
         if (io) {
             io.to(`post_${id}`).emit('poll_updated', {
@@ -1452,7 +1335,8 @@ export const votePoll = async (req: AuthRequest, res: Response) => {
             });
             console.log('Emitted poll_updated event');
         }
-    } catch (error) {
+    }
+    catch (error) {
         console.error('Error voting on poll:', error);
         res.status(500).json({
             success: false,
@@ -1461,52 +1345,47 @@ export const votePoll = async (req: AuthRequest, res: Response) => {
         });
     }
 };
-
+exports.votePoll = votePoll;
 // ==============================================
 // GET USER POLL VOTE
 // ==============================================
-export const getUserPollVote = async (req: AuthRequest, res: Response) => {
+const getUserPollVote = async (req, res) => {
     try {
         const { id } = req.params;
-        const userId = req.user!.id;
-        const pool = await getSQLServerPool();
-
+        const userId = req.user.id;
+        const pool = await (0, database_1.getSQLServerPool)();
         const result = await pool.request()
-            .input('postId', sql.Int, id)
-            .input('userId', sql.Int, userId)
+            .input('postId', mssql_1.default.Int, id)
+            .input('userId', mssql_1.default.Int, userId)
             .query('SELECT option_id FROM nt_poll_votes WHERE post_id = @postId AND cuserid = @userId');
-
         const votedOptionId = result.recordset[0]?.option_id || null;
-
         res.json({
             success: true,
             votedOptionId: votedOptionId
         });
-    } catch (error) {
+    }
+    catch (error) {
         console.error('Error checking user vote:', error);
         res.status(500).json({ success: false, message: 'Failed to check vote' });
     }
 };
-
+exports.getUserPollVote = getUserPollVote;
 // ==============================================
 // RESHARE POST
 // ==============================================
-export const resharePost = async (req: AuthRequest, res: Response) => {
+const resharePost = async (req, res) => {
     try {
         const { id } = req.params;
-        const userId = req.user!.id;
+        const userId = req.user.id;
         const { comment, includeOriginal = true } = req.body;
-        const pool = await getSQLServerPool();
-
+        const pool = await (0, database_1.getSQLServerPool)();
         console.log('🔄 Reshare request:', { originalPostId: id, userId, comment, includeOriginal });
-
         if (comment) {
             const existingResult = await pool.request()
-                .input('userId', sql.Int, userId)
-                .input('postId', sql.Int, id)
-                .input('comment', sql.NVarChar, comment)
+                .input('userId', mssql_1.default.Int, userId)
+                .input('postId', mssql_1.default.Int, id)
+                .input('comment', mssql_1.default.NVarChar, comment)
                 .query('SELECT id FROM nt_reshares WHERE cuserid = @userId AND original_post_id = @postId AND comment = @comment');
-
             if (existingResult.recordset.length > 0) {
                 return res.status(400).json({
                     success: false,
@@ -1514,59 +1393,48 @@ export const resharePost = async (req: AuthRequest, res: Response) => {
                 });
             }
         }
-
         const originalPostResult = await pool.request()
-            .input('postId', sql.Int, id)
+            .input('postId', mssql_1.default.Int, id)
             .query('SELECT * FROM nt_posts WHERE id = @postId');
-
         if (originalPostResult.recordset.length === 0) {
             return res.status(404).json({
                 success: false,
                 message: 'Original post not found'
             });
         }
-
         const originalPost = originalPostResult.recordset[0];
-
         const reshareContent = comment || `Reshared a post by @${originalPost.cuser_name || 'user'}`;
-
         const insertResult = await pool.request()
-            .input('userId', sql.Int, userId)
-            .input('content', sql.NVarChar, reshareContent)
-            .input('type', sql.NVarChar, originalPost.type)
-            .input('mediaUrls', sql.NVarChar, includeOriginal ? originalPost.media_urls : '[]')
-            .input('originalPostId', sql.Int, id)
+            .input('userId', mssql_1.default.Int, userId)
+            .input('content', mssql_1.default.NVarChar, reshareContent)
+            .input('type', mssql_1.default.NVarChar, originalPost.type)
+            .input('mediaUrls', mssql_1.default.NVarChar, includeOriginal ? originalPost.media_urls : '[]')
+            .input('originalPostId', mssql_1.default.Int, id)
             .query(`
                 INSERT INTO nt_posts (cuserid, content, type, media_urls, original_post_id, is_reshare, status, approval_status, created_at)
                 OUTPUT INSERTED.id
                 VALUES (@userId, @content, @type, @mediaUrls, @originalPostId, 1, 'approved', 'approved', GETDATE())
             `);
-
         const resharedPostId = insertResult.recordset[0]?.id;
-
         await pool.request()
-            .input('userId', sql.Int, userId)
-            .input('originalPostId', sql.Int, id)
-            .input('resharedPostId', sql.Int, resharedPostId)
-            .input('comment', sql.NVarChar, comment)
-            .input('includeOriginal', sql.Bit, includeOriginal ? 1 : 0)
+            .input('userId', mssql_1.default.Int, userId)
+            .input('originalPostId', mssql_1.default.Int, id)
+            .input('resharedPostId', mssql_1.default.Int, resharedPostId)
+            .input('comment', mssql_1.default.NVarChar, comment)
+            .input('includeOriginal', mssql_1.default.Bit, includeOriginal ? 1 : 0)
             .query(`
                 INSERT INTO nt_reshares (cuserid, original_post_id, reshared_post_id, comment, include_original)
                 VALUES (@userId, @originalPostId, @resharedPostId, @comment, @includeOriginal)
             `);
-
         await pool.request()
-            .input('postId', sql.Int, id)
+            .input('postId', mssql_1.default.Int, id)
             .query('UPDATE nt_posts SET shares_count = shares_count + 1 WHERE id = @postId');
-
         const updatedPostResult = await pool.request()
-            .input('postId', sql.Int, id)
+            .input('postId', mssql_1.default.Int, id)
             .query('SELECT shares_count FROM nt_posts WHERE id = @postId');
-
         const userInfoResult = await pool.request()
-            .input('userId', sql.Int, userId)
+            .input('userId', mssql_1.default.Int, userId)
             .query('SELECT cuser_name as username, cuser_name as full_name, cprofile_image_name as avatar_url FROM users WHERE id = @userId');
-
         const resharedPost = {
             id: resharedPostId,
             cuserid: userId,
@@ -1586,7 +1454,6 @@ export const resharePost = async (req: AuthRequest, res: Response) => {
                 mediaUrls: JSON.parse(originalPost.media_urls || '[]')
             }
         };
-
         const io = req.app.get('io');
         if (io) {
             io.emit('post_reshared', {
@@ -1597,14 +1464,14 @@ export const resharePost = async (req: AuthRequest, res: Response) => {
             });
             console.log(`📤 Emitted post_reshared for post ${id}`);
         }
-
         res.status(201).json({
             success: true,
             message: 'Post reshared successfully',
             shares_count: updatedPostResult.recordset[0]?.shares_count || 0,
             reshare: resharedPost
         });
-    } catch (error) {
+    }
+    catch (error) {
         console.error('Error resharing post:', error);
         res.status(500).json({
             success: false,
@@ -1613,50 +1480,41 @@ export const resharePost = async (req: AuthRequest, res: Response) => {
         });
     }
 };
-
+exports.resharePost = resharePost;
 // ==============================================
 // UNRESHARE POST
 // ==============================================
-export const unResharePost = async (req: AuthRequest, res: Response) => {
+const unResharePost = async (req, res) => {
     try {
         const { id } = req.params;
-        const userId = req.user!.id;
-        const pool = await getSQLServerPool();
-
+        const userId = req.user.id;
+        const pool = await (0, database_1.getSQLServerPool)();
         console.log('🔁 Removing reshare:', { originalPostId: id, userId });
-
         const reshareResult = await pool.request()
-            .input('userId', sql.Int, userId)
-            .input('postId', sql.Int, id)
+            .input('userId', mssql_1.default.Int, userId)
+            .input('postId', mssql_1.default.Int, id)
             .query('SELECT * FROM nt_reshares WHERE cuserid = @userId AND original_post_id = @postId');
-
         if (reshareResult.recordset.length === 0) {
             return res.status(404).json({
                 success: false,
                 message: 'Reshare not found'
             });
         }
-
         const reshare = reshareResult.recordset[0];
-
         if (reshare.reshared_post_id) {
             await pool.request()
-                .input('resharedPostId', sql.Int, reshare.reshared_post_id)
+                .input('resharedPostId', mssql_1.default.Int, reshare.reshared_post_id)
                 .query('DELETE FROM nt_posts WHERE id = @resharedPostId');
         }
-
         await pool.request()
-            .input('reshareId', sql.Int, reshare.id)
+            .input('reshareId', mssql_1.default.Int, reshare.id)
             .query('DELETE FROM nt_reshares WHERE id = @reshareId');
-
         await pool.request()
-            .input('postId', sql.Int, id)
+            .input('postId', mssql_1.default.Int, id)
             .query('UPDATE nt_posts SET shares_count = shares_count - 1 WHERE id = @postId');
-
         const updatedPostResult = await pool.request()
-            .input('postId', sql.Int, id)
+            .input('postId', mssql_1.default.Int, id)
             .query('SELECT shares_count FROM nt_posts WHERE id = @postId');
-
         const io = req.app.get('io');
         if (io) {
             io.emit('post_unreshared', {
@@ -1666,13 +1524,13 @@ export const unResharePost = async (req: AuthRequest, res: Response) => {
             });
             console.log(`📤 Emitted post_unreshared for post ${id}`);
         }
-
         res.json({
             success: true,
             message: 'Reshare removed',
             shares_count: updatedPostResult.recordset[0]?.shares_count || 0
         });
-    } catch (error) {
+    }
+    catch (error) {
         console.error('Error removing reshare:', error);
         res.status(500).json({
             success: false,
@@ -1681,26 +1539,25 @@ export const unResharePost = async (req: AuthRequest, res: Response) => {
         });
     }
 };
-
+exports.unResharePost = unResharePost;
 // ==============================================
 // GET RESHARE STATUS
 // ==============================================
-export const getReshareStatus = async (req: AuthRequest, res: Response) => {
+const getReshareStatus = async (req, res) => {
     try {
         const { id } = req.params;
-        const userId = req.user!.id;
-        const pool = await getSQLServerPool();
-
+        const userId = req.user.id;
+        const pool = await (0, database_1.getSQLServerPool)();
         const result = await pool.request()
-            .input('userId', sql.Int, userId)
-            .input('postId', sql.Int, id)
+            .input('userId', mssql_1.default.Int, userId)
+            .input('postId', mssql_1.default.Int, id)
             .query('SELECT id FROM nt_reshares WHERE cuserid = @userId AND original_post_id = @postId');
-
         res.json({
             success: true,
             isReshared: result.recordset.length > 0
         });
-    } catch (error) {
+    }
+    catch (error) {
         console.error('Error checking reshare status:', error);
         res.status(500).json({
             success: false,
@@ -1709,22 +1566,21 @@ export const getReshareStatus = async (req: AuthRequest, res: Response) => {
         });
     }
 };
-
+exports.getReshareStatus = getReshareStatus;
 // ==============================================
 // GET RESHARED FEED
 // ==============================================
-export const getResharedFeed = async (req: AuthRequest, res: Response) => {
+const getResharedFeed = async (req, res) => {
     try {
-        const userId = req.user!.id;
-        const page = parseInt(req.query.page as string) || 1;
-        const limit = parseInt(req.query.limit as string) || 20;
+        const userId = req.user.id;
+        const page = parseInt(req.query.page) || 1;
+        const limit = parseInt(req.query.limit) || 20;
         const offset = (page - 1) * limit;
-        const pool = await getSQLServerPool();
-
+        const pool = await (0, database_1.getSQLServerPool)();
         const result = await pool.request()
-            .input('userId', sql.Int, userId)
-            .input('limit', sql.Int, limit)
-            .input('offset', sql.Int, offset)
+            .input('userId', mssql_1.default.Int, userId)
+            .input('limit', mssql_1.default.Int, limit)
+            .input('offset', mssql_1.default.Int, offset)
             .query(`
                 SELECT 
                     p.id, p.cuserid, p.content, p.type, p.media_urls, p.hashtags, p.poll_data,
@@ -1747,7 +1603,6 @@ export const getResharedFeed = async (req: AuthRequest, res: Response) => {
                 OFFSET @offset ROWS
                 FETCH NEXT @limit ROWS ONLY
             `);
-
         const posts = result.recordset.map(post => ({
             ...post,
             mediaUrls: post.media_urls ? JSON.parse(post.media_urls) : [],
@@ -1765,14 +1620,14 @@ export const getResharedFeed = async (req: AuthRequest, res: Response) => {
                 mediaUrls: post.original_media_urls ? JSON.parse(post.original_media_urls) : []
             } : null
         }));
-
         res.json({
             success: true,
             posts: posts,
             page,
             limit
         });
-    } catch (error) {
+    }
+    catch (error) {
         console.error('Error getting reshared feed:', error);
         res.status(500).json({
             success: false,
@@ -1781,3 +1636,5 @@ export const getResharedFeed = async (req: AuthRequest, res: Response) => {
         });
     }
 };
+exports.getResharedFeed = getResharedFeed;
+//# sourceMappingURL=postController.js.map
