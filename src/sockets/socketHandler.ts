@@ -1,7 +1,6 @@
-// backend/src/sockets/socketHandler.ts
 import { Server as SocketServer, Socket } from 'socket.io';
 import { Server as HttpServer } from 'http';
-import { getSQLServerPool } from '../config/database';
+import { getSQLConnection, executeQuery } from '../config/database';
 import { verify } from 'jsonwebtoken';
 import sql from 'mssql';
 
@@ -31,23 +30,36 @@ export const initializeSocket = (server: HttpServer) => {
             const decoded = verify(token, process.env.JWT_SECRET!) as any;
             console.log('✅ Socket token verified for user:', decoded.id || decoded.username);
 
-            // Verify session in SQL Server
-            const pool = await getSQLServerPool();
-            const sessionResult = await pool.request()
-                .input('token', sql.NVarChar, token)
-                .query('SELECT * FROM nt_sessions WHERE token = @token AND expires_at > GETDATE()');
+            // Verify session in SQL Server - Using executeQuery
+            try {
+                const sessions = await executeQuery<any>(
+                    'SELECT * FROM nt_sessions WHERE token = @token AND expires_at > GETDATE()',
+                    { token }
+                );
 
-            if (sessionResult.recordset.length === 0) {
-                console.log('❌ Socket authentication failed: Session expired or not found');
-                return next(new Error('Session expired'));
+                if (!sessions || sessions.length === 0) {
+                    console.log('❌ Socket authentication failed: Session expired or not found');
+                    return next(new Error('Session expired'));
+                }
+
+                // Update session expiry
+                await executeQuery(
+                    'UPDATE nt_sessions SET expires_at = DATEADD(day, 7, GETDATE()) WHERE token = @token',
+                    { token }
+                );
+
+            } catch (dbError) {
+                console.error('⚠️ Database session check failed:', dbError);
+                // Continue even if DB check fails for development
+                // In production, you might want to reject
             }
 
             // Store user data in socket
             socket.data.user = {
-                id: decoded.id || decoded.username,
-                username: decoded.username,
-                email: decoded.email,
-                role: decoded.role || 'user'
+                id: decoded.id || decoded.username || decoded.cuserid,
+                username: decoded.username || decoded.cuser_name || 'user',
+                email: decoded.email || decoded.cemail || '',
+                role: decoded.role || decoded.crole_name || 'user'
             };
             
             console.log('✅ Socket authenticated for user:', socket.data.user.username);
@@ -76,7 +88,8 @@ export const initializeSocket = (server: HttpServer) => {
         socket.emit('connected', { 
             message: 'Connected to socket server',
             userId: userId,
-            username: username
+            username: username,
+            timestamp: new Date()
         });
 
         // Handle typing indicators
@@ -85,7 +98,8 @@ export const initializeSocket = (server: HttpServer) => {
             socket.to(`post_${data.postId}`).emit('user_typing', {
                 userId,
                 username,
-                isTyping: data.isTyping
+                isTyping: data.isTyping,
+                timestamp: new Date()
             });
         });
 
@@ -170,7 +184,8 @@ export const initializeSocket = (server: HttpServer) => {
             socket.emit('room_info', {
                 postId: postId,
                 roomSize: roomSize,
-                users: room ? Array.from(room) : []
+                userId: userId,
+                timestamp: new Date()
             });
         });
 
@@ -260,23 +275,46 @@ export const initializeSocket = (server: HttpServer) => {
             
             // Update notification in database
             try {
-                const pool = await getSQLServerPool();
-                await pool.request()
-                    .input('notificationId', sql.Int, data.notificationId)
-                    .input('userId', sql.Int, userId)
-                    .query(`
-                        UPDATE nt_notifications 
-                        SET is_read = 1 
-                        WHERE id = @notificationId AND cuserid = @userId
-                    `);
+                await executeQuery(
+                    `UPDATE nt_notifications 
+                     SET is_read = 1 
+                     WHERE id = @notificationId AND cuserid = @userId`,
+                    { 
+                        notificationId: data.notificationId, 
+                        userId: userId 
+                    }
+                );
                 
                 // Emit to user room
                 io.to(`user_${userId}`).emit('notification_updated', {
                     notificationId: data.notificationId,
-                    isRead: true
+                    isRead: true,
+                    timestamp: new Date()
                 });
             } catch (error) {
                 console.error('Error marking notification as read:', error);
+            }
+        });
+
+        // Handle mark all notifications as read
+        socket.on('mark_all_notifications_read', async () => {
+            console.log(`🔔 User ${username} marked all notifications as read`);
+            
+            try {
+                await executeQuery(
+                    `UPDATE nt_notifications 
+                     SET is_read = 1 
+                     WHERE cuserid = @userId AND is_read = 0`,
+                    { userId: userId }
+                );
+                
+                // Emit to user room
+                io.to(`user_${userId}`).emit('all_notifications_read', {
+                    userId: userId,
+                    timestamp: new Date()
+                });
+            } catch (error) {
+                console.error('Error marking all notifications as read:', error);
             }
         });
 
@@ -289,7 +327,34 @@ export const initializeSocket = (server: HttpServer) => {
             
             socket.emit('room_size', {
                 postId: postId,
-                roomSize: roomSize
+                roomSize: roomSize,
+                timestamp: new Date()
+            });
+        });
+
+        // Handle get online users count
+        socket.on('get_online_users', () => {
+            const onlineUsers = getConnectedUsers();
+            socket.emit('online_users', {
+                count: onlineUsers.length,
+                users: onlineUsers,
+                timestamp: new Date()
+            });
+        });
+
+        // Handle poll vote update
+        socket.on('poll_vote', async (data: { postId: number, optionId: number, pollData: any }) => {
+            if (!data.postId || !data.optionId) return;
+            
+            console.log(`📊 User ${username} voted on poll ${data.postId}`);
+            
+            // Broadcast to post room
+            io.to(`post_${data.postId}`).emit('poll_updated', {
+                postId: data.postId,
+                pollData: data.pollData,
+                userId: userId,
+                optionId: data.optionId,
+                timestamp: new Date()
             });
         });
 
@@ -304,6 +369,7 @@ export const initializeSocket = (server: HttpServer) => {
         });
     });
 
+    console.log('🔌 Socket.IO server initialized');
     return io;
 };
 
@@ -311,7 +377,10 @@ export const initializeSocket = (server: HttpServer) => {
 export const emitToPostRoom = (postId: number, event: string, data: any) => {
     if (io) {
         // Emit to post room
-        io.to(`post_${postId}`).emit(event, data);
+        io.to(`post_${postId}`).emit(event, {
+            ...data,
+            timestamp: new Date()
+        });
         console.log(`📤 Emitted ${event} for post ${postId} to room`);
     }
 };
@@ -319,7 +388,10 @@ export const emitToPostRoom = (postId: number, event: string, data: any) => {
 // Helper function to emit to user room
 export const emitToUser = (userId: number, event: string, data: any) => {
     if (io) {
-        io.to(`user_${userId}`).emit(event, data);
+        io.to(`user_${userId}`).emit(event, {
+            ...data,
+            timestamp: new Date()
+        });
         console.log(`📤 Emitted ${event} to user ${userId}`);
     }
 };
@@ -327,7 +399,10 @@ export const emitToUser = (userId: number, event: string, data: any) => {
 // Helper function to emit to all users
 export const emitToAll = (event: string, data: any) => {
     if (io) {
-        io.emit(event, data);
+        io.emit(event, {
+            ...data,
+            timestamp: new Date()
+        });
         console.log(`📤 Emitted ${event} to all users`);
     }
 };
@@ -346,7 +421,7 @@ export const getConnectedUsers = (): string[] => {
     const rooms = io.sockets.adapter.rooms;
     
     for (const [roomName, room] of rooms) {
-        if (roomName.startsWith('user_')) {
+        if (roomName.startsWith('user_') && room.size > 0) {
             const userId = roomName.replace('user_', '');
             users.push(userId);
         }
@@ -359,7 +434,10 @@ export const getConnectedUsers = (): string[] => {
 export const emitToMultiplePosts = (postIds: number[], event: string, data: any) => {
     if (io) {
         postIds.forEach(postId => {
-            io.to(`post_${postId}`).emit(event, data);
+            io.to(`post_${postId}`).emit(event, {
+                ...data,
+                timestamp: new Date()
+            });
         });
         console.log(`📤 Emitted ${event} to ${postIds.length} post rooms`);
     }
@@ -426,5 +504,71 @@ export const broadcastReactionUpdate = (postId: number, userId: number, username
         };
         io.to(`post_${postId}`).emit('reaction_updated', data);
         io.emit('reaction_updated_global', data);
+    }
+};
+
+// Helper to broadcast post approved
+export const broadcastPostApproved = (postId: number, post: any) => {
+    if (io) {
+        const data = {
+            postId,
+            post,
+            timestamp: new Date()
+        };
+        io.emit('post_approved_live', data);
+        io.to(`post_${postId}`).emit('post_status_changed', {
+            postId,
+            status: 'approved',
+            post,
+            timestamp: new Date()
+        });
+        console.log(`📤 Broadcast post approved for post ${postId}`);
+    }
+};
+
+// Helper to broadcast post rejected
+export const broadcastPostRejected = (postId: number, reason: string) => {
+    if (io) {
+        const data = {
+            postId,
+            reason,
+            timestamp: new Date()
+        };
+        io.emit('post_rejected', data);
+        io.to(`post_${postId}`).emit('post_status_changed', {
+            postId,
+            status: 'rejected',
+            reason,
+            timestamp: new Date()
+        });
+        console.log(`📤 Broadcast post rejected for post ${postId}`);
+    }
+};
+
+// Helper to broadcast new post
+export const broadcastNewPost = (post: any) => {
+    if (io) {
+        const data = {
+            post,
+            timestamp: new Date()
+        };
+        io.emit('post_created', data);
+        io.emit('new_post_global', data);
+        console.log(`📤 Broadcast new post ${post.id}`);
+    }
+};
+
+// Helper to broadcast poll update
+export const broadcastPollUpdate = (postId: number, pollData: any, userId: number, optionId: number) => {
+    if (io) {
+        const data = {
+            postId,
+            pollData,
+            userId,
+            optionId,
+            timestamp: new Date()
+        };
+        io.to(`post_${postId}`).emit('poll_updated', data);
+        console.log(`📤 Broadcast poll update for post ${postId}`);
     }
 };
