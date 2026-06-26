@@ -22,7 +22,7 @@ Thumbs.db
 *.swp
 *.swo
 *~
-
+/dist
 # Coverage directory
 coverage/
 .nyc_output/
