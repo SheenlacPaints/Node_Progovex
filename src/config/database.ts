@@ -1,63 +1,147 @@
+import sql from 'mssql';
 import mongoose from 'mongoose';
 import winston from 'winston';
 import dotenv from 'dotenv';
-import sql from 'mssql';
 
 dotenv.config();
 
-// ==============================================
-// SQL SERVER CONNECTION POOL
-// ==============================================
-const sqlServerConfig: sql.config = {
-    user: process.env.MSSQL_USER || 'sa',
-    password: process.env.MSSQL_PASSWORD || '',
-    server: process.env.MSSQL_HOST || 'localhost',
-    port: parseInt(process.env.MSSQL_PORT || '1433'),
-    database: process.env.MSSQL_DATABASE || 'TASKENGINE',
+// SQL Server Connection Configuration
+const sqlConfig: sql.config = {
+    user: process.env.SQL_SERVER_USER || 'sa',
+    password: process.env.SQL_SERVER_PASSWORD || '',
+    server: process.env.SQL_SERVER_HOST || 'localhost',
+    port: parseInt(process.env.SQL_SERVER_PORT || '1433'),
+    database: process.env.SQL_SERVER_DATABASE || 'social_platform',
     options: {
-        encrypt: process.env.MSSQL_ENCRYPT === 'true',
-        trustServerCertificate: process.env.MSSQL_TRUST_CERT === 'true',
+        encrypt: process.env.SQL_SERVER_ENCRYPT === 'true',
+        trustServerCertificate: process.env.SQL_SERVER_TRUST_SERVER_CERTIFICATE === 'true',
         enableArithAbort: true,
+        connectTimeout: 30000,
+        requestTimeout: 30000,
     },
     pool: {
         max: 10,
         min: 0,
-        idleTimeoutMillis: 30000
+        idleTimeoutMillis: 30000,
+    },
+    connectionTimeout: 30000,
+};
+
+// SQL Server Connection Pool
+export let pool: sql.ConnectionPool | null = null;
+
+// Function to get connection pool
+export const getSQLConnection = async (): Promise<sql.ConnectionPool> => {
+    try {
+        if (pool) {
+            // Check if pool is still connected
+            try {
+                const test = await pool.query('SELECT 1');
+                if (test) {
+                    return pool;
+                }
+            } catch (err) {
+                console.log('⚠️ Pool connection lost, reconnecting...');
+                pool = null;
+            }
+        }
+
+        // Create new connection
+        console.log('📡 Connecting to SQL Server...');
+        pool = await sql.connect(sqlConfig);
+        console.log('✅ SQL Server connected successfully');
+        return pool;
+    } catch (error) {
+        console.error('❌ SQL Server connection failed:', error);
+        throw error;
     }
 };
 
-let sqlServerPool: sql.ConnectionPool | null = null;
+// Function to execute queries with automatic connection handling
+export const executeQuery = async <T = any>(
+    query: string,
+    params?: { [key: string]: any }
+): Promise<T> => {
+    const connection = await getSQLConnection();
+    
+    try {
+        const request = connection.request();
+        
+        // Add parameters if provided
+        if (params) {
+            Object.keys(params).forEach(key => {
+                request.input(key, params[key]);
+            });
+        }
+        
+        // Execute query
+        const result = await request.query(query);
+        return result.recordset as T;
+    } catch (error) {
+        console.error('❌ Query execution failed:', error);
+        throw error;
+    }
+};
 
-export const getSQLServerPool = async (): Promise<sql.ConnectionPool> => {
-    if (!sqlServerPool) {
+// Function to execute non-query (INSERT, UPDATE, DELETE)
+export const executeNonQuery = async (
+    query: string,
+    params?: { [key: string]: any }
+): Promise<any> => {
+    const connection = await getSQLConnection();
+    
+    try {
+        const request = connection.request();
+        
+        // Add parameters if provided
+        if (params) {
+            Object.keys(params).forEach(key => {
+                request.input(key, params[key]);
+            });
+        }
+        
+        // Execute query
+        const result = await request.query(query);
+        return result;
+    } catch (error) {
+        console.error('❌ Non-query execution failed:', error);
+        throw error;
+    }
+};
+
+// Transaction helper
+export const executeTransaction = async <T>(
+    callback: (connection: sql.ConnectionPool) => Promise<T>
+): Promise<T> => {
+    const connection = await getSQLConnection();
+    const transaction = new sql.Transaction(connection);
+    
+    try {
+        await transaction.begin();
+        const result = await callback(connection);
+        await transaction.commit();
+        return result;
+    } catch (error) {
+        await transaction.rollback();
+        throw error;
+    }
+};
+
+// Close SQL connection (for graceful shutdown)
+export const closeSQLConnection = async (): Promise<void> => {
+    if (pool) {
         try {
-            sqlServerPool = await sql.connect(sqlServerConfig);
-            console.log('✅ SQL Server connected successfully');
-            
-            // Test connection
-            const result = await sqlServerPool.request().query('SELECT 1 as test');
-            console.log('✅ SQL Server test query successful');
-        } catch (err) {
-            console.error('❌ SQL Server connection failed:', err);
-            throw err;
+            await pool.close();
+            pool = null;
+            console.log('✅ SQL Server connection closed');
+        } catch (error) {
+            console.error('❌ Error closing SQL Server connection:', error);
+            throw error;
         }
     }
-    return sqlServerPool;
 };
 
-export const testSQLServerConnection = async (): Promise<boolean> => {
-    try {
-        const pool = await getSQLServerPool();
-        await pool.request().query('SELECT 1');
-        return true;
-    } catch (error) {
-        return false;
-    }
-};
-
-// ==============================================
-// MONGODB CONNECTION (optional)
-// ==============================================
+// MongoDB Connection (optional)
 export const connectMongoDB = async () => {
     const isEnabled = process.env.MONGODB_ENABLED === 'true';
 
@@ -82,11 +166,9 @@ export const connectMongoDB = async () => {
     }
 };
 
-// ==============================================
-// WINSTON LOGGER
-// ==============================================
+// Winston Logger
 export const logger = winston.createLogger({
-    level: process.env.LOG_LEVEL || 'info',
+    level: 'info',
     format: winston.format.combine(
         winston.format.timestamp(),
         winston.format.json()
@@ -94,21 +176,15 @@ export const logger = winston.createLogger({
     transports: [
         new winston.transports.File({ filename: 'error.log', level: 'error' }),
         new winston.transports.File({ filename: 'combined.log' }),
-        new winston.transports.Console({
-            format: winston.format.combine(
-                winston.format.colorize(),
-                winston.format.simple()
-            )
-        })
+        new winston.transports.Console()
     ]
 });
 
-// ==============================================
-// ACTIVITY LOG (MongoDB fallback)
-// ==============================================
+// Activity Log Model (MongoDB) - with fallback for when MongoDB is not available
 let ActivityLog: any = {
     create: async (data: any) => {
-        logger.info('Activity Log:', data);
+        // Log to console instead
+        console.log('[LOG]', data);
         return { _id: Date.now().toString() };
     },
     find: () => ({
@@ -135,6 +211,7 @@ try {
         timestamp: { type: Date, default: Date.now }
     });
 
+    // Only create model if mongoose is connected
     if (mongoose.connection.readyState === 1) {
         ActivityLog = mongoose.model('ActivityLog', activityLogSchema);
     }

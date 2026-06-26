@@ -33,7 +33,8 @@ router.use(authenticateToken);
 router.use(authorizeModerator);
 
 // Post moderation
-router.get('/posts/pending', authorizeAdmin, getPendingPosts);
+// router.get('/posts/pending', authorizeAdmin, getPendingPosts);
+router.get('/posts/pending', getPendingPosts);
 router.get('/posts', getAllPostsForAdmin);
 router.get('/stats', getPostStats);  
 

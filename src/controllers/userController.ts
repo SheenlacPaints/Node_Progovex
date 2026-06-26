@@ -1,6 +1,5 @@
-// backend/src/controllers/userController.ts
 import { Request, Response } from 'express';
-import { getSQLServerPool, ActivityLog } from '../config/database';
+import { executeQuery, executeNonQuery, ActivityLog } from '../config/database';
 import { AppError } from '../middleware/errorHandler';
 import { AuthRequest } from '../middleware/auth';
 import bcrypt from 'bcryptjs';
@@ -8,153 +7,139 @@ import { processImage } from '../utils/fileUpload';
 import sql from 'mssql';
 
 export const getUserProfile = async (req: AuthRequest, res: Response) => {
-    try {
-        const { username } = req.params;
-        const currentUserId = req.user!.id;
-        const pool = await getSQLServerPool();
+    const { username } = req.params;
+    const currentUserId = req.user!.id;
 
-        let query = '';
-        let request = pool.request();
+    let query: string;
+    let params: any;
 
-        if (username) {
-            query = 'SELECT id, username, full_name, avatar_url, bio, created_at FROM users WHERE username = @username';
-            request.input('username', sql.NVarChar, username);
-        } else {
-            query = 'SELECT id, username, full_name, avatar_url, bio, created_at FROM users WHERE id = @userId';
-            request.input('userId', sql.Int, currentUserId);
-        }
-
-        const result = await request.query(query);
-        const user = result.recordset[0];
-
-        if (!user) {
-            throw new AppError('User not found', 404);
-        }
-
-        // Get follower counts
-        const [followersResult, followingResult, isFollowingResult] = await Promise.all([
-            pool.request()
-                .input('userId', sql.Int, user.id)
-                .query('SELECT COUNT(*) as count FROM nt_follows WHERE following_id = @userId'),
-            pool.request()
-                .input('userId', sql.Int, user.id)
-                .query('SELECT COUNT(*) as count FROM nt_follows WHERE follower_id = @userId'),
-            pool.request()
-                .input('followerId', sql.Int, currentUserId)
-                .input('followingId', sql.Int, user.id)
-                .query('SELECT id FROM nt_follows WHERE follower_id = @followerId AND following_id = @followingId')
-        ]);
-
-        res.json({
-            success: true,
-            user: {
-                ...user,
-                followers_count: followersResult.recordset[0]?.count || 0,
-                following_count: followingResult.recordset[0]?.count || 0,
-                is_following: isFollowingResult.recordset.length > 0
-            }
-        });
-    } catch (error) {
-        console.error('Error getting user profile:', error);
-        res.status(500).json({
-            success: false,
-            message: 'Failed to get user profile',
-            error: error.message
-        });
+    if (username) {
+        query = `
+            SELECT id, username, full_name, avatar_url, bio, created_at 
+            FROM users 
+            WHERE username = @username
+        `;
+        params = { username };
+    } else {
+        query = `
+            SELECT id, username, full_name, avatar_url, bio, created_at 
+            FROM users 
+            WHERE id = @userId
+        `;
+        params = { userId: currentUserId };
     }
+
+    const users = await executeQuery<any>(query, params);
+    const user = users[0];
+
+    if (!user) {
+        throw new AppError('User not found', 404);
+    }
+
+    // Get follower counts
+    const followers = await executeQuery<any>(
+        'SELECT COUNT(*) as count FROM nt_follows WHERE following_id = @userId',
+        { userId: user.id }
+    );
+
+    const following = await executeQuery<any>(
+        'SELECT COUNT(*) as count FROM nt_follows WHERE follower_id = @userId',
+        { userId: user.id }
+    );
+
+    // Check if current user follows this user
+    const isFollowing = await executeQuery<any>(
+        'SELECT id FROM nt_follows WHERE follower_id = @followerId AND following_id = @followingId',
+        { followerId: currentUserId, followingId: user.id }
+    );
+
+    res.json({
+        success: true,
+        user: {
+            ...user,
+            followers_count: followers[0]?.count || 0,
+            following_count: following[0]?.count || 0,
+            is_following: isFollowing && isFollowing.length > 0
+        }
+    });
 };
 
 export const updateUserProfile = async (req: AuthRequest, res: Response) => {
-    try {
-        const { fullName, bio } = req.body;
-        const userId = req.user!.id;
-        const pool = await getSQLServerPool();
+    const { fullName, bio } = req.body;
+    const userId = req.user!.id;
 
-        await pool.request()
-            .input('fullName', sql.NVarChar, fullName)
-            .input('bio', sql.NVarChar, bio)
-            .input('userId', sql.Int, userId)
-            .query('UPDATE users SET full_name = @fullName, bio = @bio WHERE id = @userId');
+    await executeNonQuery(
+        'UPDATE users SET full_name = @fullName, bio = @bio WHERE id = @userId',
+        { fullName, bio, userId }
+    );
 
-        await ActivityLog.create({
-            userId: userId.toString(),
-            action: 'update_profile',
-            entityType: 'user',
-            details: { fullName, bio },
-            ipAddress: req.ip
-        });
+    await ActivityLog.create({
+        userId: userId.toString(),
+        action: 'update_profile',
+        entityType: 'user',
+        details: { fullName, bio },
+        ipAddress: req.ip
+    });
 
-        res.json({ success: true, message: 'Profile updated successfully' });
-    } catch (error) {
-        console.error('Error updating user profile:', error);
-        res.status(500).json({
-            success: false,
-            message: 'Failed to update profile',
-            error: error.message
-        });
-    }
+    res.json({ success: true, message: 'Profile updated successfully' });
 };
 
 export const updateAvatar = async (req: AuthRequest, res: Response) => {
-    // if (!req.file) {
-    //     throw new AppError('No file uploaded', 400);
-    // }
+    try {
+        if (!req.file) {
+            throw new AppError('No file uploaded', 400);
+        }
 
-    // const avatarUrl = await processImage(req.file.buffer, req.file.originalname);
-    // const userId = req.user!.id;
+        const avatarUrl = await processImage(req.file.originalname);
+        const userId = req.user!.id;
 
-    // await mysqlPool.execute(
-    //     'UPDATE users SET avatar_url = ? WHERE id = ?',
-    //     [avatarUrl, userId]
-    // );
+        await executeNonQuery(
+            'UPDATE users SET avatar_url = @avatarUrl WHERE id = @userId',
+            { avatarUrl, userId }
+        );
 
-    // res.json({ success: true, avatarUrl });
-    res.json({ success: true, message: 'Avatar update coming soon' });
+        res.json({ success: true, avatarUrl });
+    } catch (error) {
+        console.error('Error updating avatar:', error);
+        res.status(500).json({ success: false, message: 'Failed to update avatar' });
+    }
 };
 
 export const followUser = async (req: AuthRequest, res: Response) => {
+    const followerId = req.user!.id;
+    const followingId = parseInt(req.params.userId);
+
+    if (followerId === followingId) {
+        throw new AppError('Cannot follow yourself', 400);
+    }
+
+    // Check if user exists
+    const users = await executeQuery<any>(
+        'SELECT id FROM users WHERE id = @userId',
+        { userId: followingId }
+    );
+
+    if (!users || users.length === 0) {
+        throw new AppError('User not found', 404);
+    }
+
     try {
-        const followerId = req.user!.id;
-        const followingId = parseInt(req.params.userId);
-        const pool = await getSQLServerPool();
-
-        if (followerId === followingId) {
-            throw new AppError('Cannot follow yourself', 400);
-        }
-
-        // Check if user exists
-        const userResult = await pool.request()
-            .input('userId', sql.Int, followingId)
-            .query('SELECT id FROM users WHERE id = @userId');
-
-        if (userResult.recordset.length === 0) {
-            throw new AppError('User not found', 404);
-        }
-
-        // Check if already following
-        const checkResult = await pool.request()
-            .input('followerId', sql.Int, followerId)
-            .input('followingId', sql.Int, followingId)
-            .query('SELECT id FROM nt_follows WHERE follower_id = @followerId AND following_id = @followingId');
-
-        if (checkResult.recordset.length > 0) {
-            throw new AppError('Already following this user', 400);
-        }
-
-        await pool.request()
-            .input('followerId', sql.Int, followerId)
-            .input('followingId', sql.Int, followingId)
-            .query('INSERT INTO nt_follows (follower_id, following_id) VALUES (@followerId, @followingId)');
+        await executeNonQuery(
+            'INSERT INTO nt_follows (follower_id, following_id) VALUES (@followerId, @followingId)',
+            { followerId, followingId }
+        );
 
         // Create notification
-        await pool.request()
-            .input('followingId', sql.Int, followingId)
-            .input('followerId', sql.Int, followerId)
-            .input('content', sql.NVarChar, `${req.user!.username} started following you`)
-            .query(`
-                INSERT INTO nt_notifications (cuserid, type, reference_id, content) 
-                VALUES (@followingId, 'follow', @followerId, @content)
-            `);
+        await executeNonQuery(
+            `INSERT INTO nt_notifications (cuserid, from_user_id, type, reference_id, reference_type, content, created_at) 
+             VALUES (@userId, @fromUserId, 'follow', @referenceId, 'user', @content, GETDATE())`,
+            {
+                userId: followingId,
+                fromUserId: followerId,
+                referenceId: followerId,
+                content: `${req.user!.username} started following you`
+            }
+        );
 
         await ActivityLog.create({
             userId: followerId.toString(),
@@ -165,163 +150,107 @@ export const followUser = async (req: AuthRequest, res: Response) => {
         });
 
         res.json({ success: true, message: 'User followed' });
-    } catch (error) {
-        console.error('Error following user:', error);
-        res.status(500).json({
-            success: false,
-            message: error.message || 'Failed to follow user',
-            error: error.message
-        });
+    } catch (error: any) {
+        // Check for duplicate entry error in SQL Server
+        if (error.message && error.message.includes('Violation of UNIQUE KEY')) {
+            throw new AppError('Already following this user', 400);
+        }
+        throw error;
     }
 };
 
 export const unfollowUser = async (req: AuthRequest, res: Response) => {
-    try {
-        const followerId = req.user!.id;
-        const followingId = parseInt(req.params.userId);
-        const pool = await getSQLServerPool();
+    const followerId = req.user!.id;
+    const followingId = parseInt(req.params.userId);
 
-        await pool.request()
-            .input('followerId', sql.Int, followerId)
-            .input('followingId', sql.Int, followingId)
-            .query('DELETE FROM nt_follows WHERE follower_id = @followerId AND following_id = @followingId');
+    await executeNonQuery(
+        'DELETE FROM nt_follows WHERE follower_id = @followerId AND following_id = @followingId',
+        { followerId, followingId }
+    );
 
-        res.json({ success: true, message: 'User unfollowed' });
-    } catch (error) {
-        console.error('Error unfollowing user:', error);
-        res.status(500).json({
-            success: false,
-            message: 'Failed to unfollow user',
-            error: error.message
-        });
-    }
+    res.json({ success: true, message: 'User unfollowed' });
 };
 
 export const getFollowers = async (req: AuthRequest, res: Response) => {
-    try {
-        const userId = parseInt(req.params.userId);
-        const { page = 1, limit = 20 } = req.query;
-        const offset = (Number(page) - 1) * Number(limit);
-        const pool = await getSQLServerPool();
+    const userId = parseInt(req.params.userId);
+    const page = parseInt(req.query.page as string) || 1;
+    const limit = parseInt(req.query.limit as string) || 20;
+    const offset = (page - 1) * limit;
 
-        const result = await pool.request()
-            .input('userId', sql.Int, userId)
-            .input('limit', sql.Int, Number(limit))
-            .input('offset', sql.Int, offset)
-            .query(`
-                SELECT u.id, u.username, u.full_name, u.avatar_url 
-                FROM nt_follows f 
-                JOIN users u ON f.follower_id = u.id 
-                WHERE f.following_id = @userId 
-                OFFSET @offset ROWS
-                FETCH NEXT @limit ROWS ONLY
-            `);
+    const followers = await executeQuery<any>(
+        `SELECT u.id, u.username, u.full_name, u.avatar_url 
+         FROM nt_follows f 
+         JOIN users u ON f.follower_id = u.id 
+         WHERE f.following_id = @userId 
+         ORDER BY f.created_at DESC
+         OFFSET @offset ROWS FETCH NEXT @limit ROWS ONLY`,
+        { userId, offset, limit }
+    );
 
-        res.json({ success: true, followers: result.recordset, page, limit });
-    } catch (error) {
-        console.error('Error getting followers:', error);
-        res.status(500).json({
-            success: false,
-            message: 'Failed to get followers',
-            error: error.message
-        });
-    }
+    res.json({ success: true, followers, page, limit });
 };
 
 export const getFollowing = async (req: AuthRequest, res: Response) => {
-    try {
-        const userId = parseInt(req.params.userId);
-        const { page = 1, limit = 20 } = req.query;
-        const offset = (Number(page) - 1) * Number(limit);
-        const pool = await getSQLServerPool();
+    const userId = parseInt(req.params.userId);
+    const page = parseInt(req.query.page as string) || 1;
+    const limit = parseInt(req.query.limit as string) || 20;
+    const offset = (page - 1) * limit;
 
-        const result = await pool.request()
-            .input('userId', sql.Int, userId)
-            .input('limit', sql.Int, Number(limit))
-            .input('offset', sql.Int, offset)
-            .query(`
-                SELECT u.id, u.username, u.full_name, u.avatar_url 
-                FROM nt_follows f 
-                JOIN users u ON f.following_id = u.id 
-                WHERE f.follower_id = @userId 
-                OFFSET @offset ROWS
-                FETCH NEXT @limit ROWS ONLY
-            `);
+    const following = await executeQuery<any>(
+        `SELECT u.id, u.username, u.full_name, u.avatar_url 
+         FROM nt_follows f 
+         JOIN users u ON f.following_id = u.id 
+         WHERE f.follower_id = @userId 
+         ORDER BY f.created_at DESC
+         OFFSET @offset ROWS FETCH NEXT @limit ROWS ONLY`,
+        { userId, offset, limit }
+    );
 
-        res.json({ success: true, following: result.recordset, page, limit });
-    } catch (error) {
-        console.error('Error getting following:', error);
-        res.status(500).json({
-            success: false,
-            message: 'Failed to get following',
-            error: error.message
-        });
-    }
+    res.json({ success: true, following, page, limit });
 };
 
 export const getUserPosts = async (req: AuthRequest, res: Response) => {
-    try {
-        const userId = parseInt(req.params.userId);
-        const { page = 1, limit = 20 } = req.query;
-        const offset = (Number(page) - 1) * Number(limit);
-        const pool = await getSQLServerPool();
+    const userId = parseInt(req.params.userId);
+    const page = parseInt(req.query.page as string) || 1;
+    const limit = parseInt(req.query.limit as string) || 20;
+    const offset = (page - 1) * limit;
 
-        const result = await pool.request()
-            .input('userId', sql.Int, userId)
-            .input('limit', sql.Int, Number(limit))
-            .input('offset', sql.Int, offset)
-            .query(`
-                SELECT p.*, 
-                    (SELECT COUNT(*) FROM nt_reactions WHERE post_id = p.id) as likes_count,
-                    (SELECT COUNT(*) FROM nt_comments WHERE post_id = p.id) as comments_count
-                FROM nt_posts p
-                WHERE p.cuserid = @userId AND p.status = 'approved'
-                ORDER BY p.created_at DESC
-                OFFSET @offset ROWS
-                FETCH NEXT @limit ROWS ONLY
-            `);
+    const posts = await executeQuery<any>(
+        `SELECT 
+            p.*,
+            (SELECT COUNT(*) FROM nt_reactions WHERE post_id = p.id) as likes_count,
+            (SELECT COUNT(*) FROM nt_comments WHERE post_id = p.id) as comments_count
+         FROM nt_posts p
+         WHERE p.cuserid = @userId AND p.status = 'approved'
+         ORDER BY p.created_at DESC
+         OFFSET @offset ROWS FETCH NEXT @limit ROWS ONLY`,
+        { userId, offset, limit }
+    );
 
-        res.json({ success: true, posts: result.recordset, page, limit });
-    } catch (error) {
-        console.error('Error getting user posts:', error);
-        res.status(500).json({
-            success: false,
-            message: 'Failed to get user posts',
-            error: error.message
-        });
-    }
+    res.json({ success: true, posts, page, limit });
 };
 
 export const searchUsers = async (req: AuthRequest, res: Response) => {
-    try {
-        const { q, limit = 20 } = req.query;
-        const pool = await getSQLServerPool();
+    const q = req.query.q as string;
+    const limit = parseInt(req.query.limit as string) || 20;
 
-        if (!q) {
-            throw new AppError('Search query required', 400);
-        }
-
-        const result = await pool.request()
-            .input('query', sql.NVarChar, `%${q}%`)
-            .input('limit', sql.Int, Number(limit))
-            .query(`
-                SELECT id, username, full_name, avatar_url 
-                FROM users 
-                WHERE username LIKE @query OR full_name LIKE @query
-                ORDER BY username
-                OFFSET 0 ROWS
-                FETCH NEXT @limit ROWS ONLY
-            `);
-
-        res.json({ success: true, users: result.recordset });
-    } catch (error) {
-        console.error('Error searching users:', error);
-        res.status(500).json({
-            success: false,
-            message: 'Failed to search users',
-            error: error.message
-        });
+    if (!q) {
+        throw new AppError('Search query required', 400);
     }
+
+    const users = await executeQuery<any>(
+        `SELECT id, username, full_name, avatar_url 
+         FROM users 
+         WHERE username LIKE @searchTerm OR full_name LIKE @searchTerm
+         ORDER BY username
+         OFFSET 0 ROWS FETCH NEXT @limit ROWS ONLY`,
+        { 
+            searchTerm: `%${q}%`,
+            limit 
+        }
+    );
+
+    res.json({ success: true, users });
 };
 
 export const getNotifications = async (req: AuthRequest, res: Response) => {
@@ -330,53 +259,51 @@ export const getNotifications = async (req: AuthRequest, res: Response) => {
         const page = parseInt(req.query.page as string) || 1;
         const limit = parseInt(req.query.limit as string) || 20;
         const offset = (page - 1) * limit;
-        const pool = await getSQLServerPool();
 
         console.log('📥 Fetching notifications for user:', userId);
         console.log('📊 Page:', page, 'Limit:', limit, 'Offset:', offset);
 
-        // Get notifications
-        const result = await pool.request()
-            .input('userId', sql.Int, userId)
-            .input('limit', sql.Int, limit)
-            .input('offset', sql.Int, offset)
-            .query(`
-                SELECT 
-                    id, 
-                    cuserid, 
-                    from_user_id, 
-                    type, 
-                    reference_id, 
-                    reference_type, 
-                    content, 
-                    is_read, 
-                    created_at
-                FROM nt_notifications 
-                WHERE cuserid = @userId
-                ORDER BY created_at DESC
-                OFFSET @offset ROWS
-                FETCH NEXT @limit ROWS ONLY
-            `);
+        // Get notifications with pagination
+        const notifications = await executeQuery<any>(
+            `SELECT 
+                id, 
+                cuserid, 
+                from_user_id, 
+                type, 
+                reference_id, 
+                reference_type, 
+                content, 
+                is_read, 
+                created_at
+             FROM nt_notifications 
+             WHERE cuserid = @userId
+             ORDER BY created_at DESC
+             OFFSET @offset ROWS FETCH NEXT @limit ROWS ONLY`,
+            { userId, offset, limit }
+        );
 
         // Get unread count
-        const unreadResult = await pool.request()
-            .input('userId', sql.Int, userId)
-            .query('SELECT COUNT(*) as count FROM nt_notifications WHERE cuserid = @userId AND is_read = 0');
+        const unreadResult = await executeQuery<any>(
+            `SELECT COUNT(*) as count 
+             FROM nt_notifications 
+             WHERE cuserid = @userId AND is_read = 0`,
+            { userId }
+        );
 
-        const unreadCount = unreadResult.recordset[0]?.count || 0;
-        console.log('📊 Notifications found:', result.recordset.length);
+        const unreadCount = unreadResult[0]?.count || 0;
+        console.log('📊 Notifications found:', notifications.length);
         console.log('📊 Unread count:', unreadCount);
 
-        // Format notifications
+        // Format notifications with user data
         const formattedNotifications = [];
-        for (const notif of result.recordset) {
+        for (const notif of notifications) {
             let fromUser = null;
             if (notif.from_user_id) {
-                const userResult = await pool.request()
-                    .input('userId', sql.Int, notif.from_user_id)
-                    .query('SELECT username, full_name, avatar_url FROM users WHERE id = @userId');
-
-                const userData = userResult.recordset[0];
+                const userResult = await executeQuery<any>(
+                    'SELECT username, full_name, avatar_url FROM users WHERE id = @userId',
+                    { userId: notif.from_user_id }
+                );
+                const userData = userResult[0];
                 if (userData) {
                     fromUser = {
                         username: userData.username,
@@ -437,16 +364,15 @@ export const markNotificationRead = async (req: AuthRequest, res: Response) => {
     try {
         const userId = req.user!.id;
         const notificationId = req.params.id;
-        const pool = await getSQLServerPool();
 
         console.log('📌 Marking notification as read:', notificationId, 'for user:', userId);
 
-        const result = await pool.request()
-            .input('notificationId', sql.Int, notificationId)
-            .input('userId', sql.Int, userId)
-            .query('UPDATE nt_notifications SET is_read = 1 WHERE id = @notificationId AND cuserid = @userId');
+        const result = await executeNonQuery(
+            'UPDATE nt_notifications SET is_read = 1 WHERE id = @notificationId AND cuserid = @userId',
+            { notificationId, userId }
+        );
 
-        if (result.rowsAffected[0] === 0) {
+        if (result.rowsAffected && result.rowsAffected[0] === 0) {
             console.log('Notification not found or already read');
             return res.status(404).json({ success: false, message: 'Notification not found' });
         }
@@ -461,15 +387,15 @@ export const markNotificationRead = async (req: AuthRequest, res: Response) => {
 export const markAllAsRead = async (req: AuthRequest, res: Response) => {
     try {
         const userId = req.user!.id;
-        const pool = await getSQLServerPool();
 
         console.log('📌 Marking all notifications as read for user:', userId);
 
-        const result = await pool.request()
-            .input('userId', sql.Int, userId)
-            .query('UPDATE nt_notifications SET is_read = 1 WHERE cuserid = @userId AND is_read = 0');
+        const result = await executeNonQuery(
+            'UPDATE nt_notifications SET is_read = 1 WHERE cuserid = @userId AND is_read = 0',
+            { userId }
+        );
 
-        console.log('Updated rows:', result.rowsAffected[0]);
+        console.log('Updated rows:', result.rowsAffected?.[0] || 0);
 
         res.json({ success: true, message: 'All notifications marked as read' });
     } catch (error) {
@@ -481,13 +407,13 @@ export const markAllAsRead = async (req: AuthRequest, res: Response) => {
 export const markAllNotificationsRead = async (req: AuthRequest, res: Response) => {
     try {
         const userId = req.user!.id;
-        const pool = await getSQLServerPool();
 
         console.log('📌 Marking all notifications as read for user:', userId);
 
-        await pool.request()
-            .input('userId', sql.Int, userId)
-            .query('UPDATE nt_notifications SET is_read = 1 WHERE cuserid = @userId AND is_read = 0');
+        await executeNonQuery(
+            'UPDATE nt_notifications SET is_read = 1 WHERE cuserid = @userId AND is_read = 0',
+            { userId }
+        );
 
         res.json({ success: true, message: 'All notifications marked as read' });
     } catch (error) {
@@ -497,162 +423,275 @@ export const markAllNotificationsRead = async (req: AuthRequest, res: Response) 
 };
 
 export const deleteNotification = async (req: AuthRequest, res: Response) => {
-    try {
-        const userId = req.user!.id;
-        const notificationId = req.params.id;
-        const pool = await getSQLServerPool();
+    const userId = req.user!.id;
+    const notificationId = req.params.id;
 
-        await pool.request()
-            .input('notificationId', sql.Int, notificationId)
-            .input('userId', sql.Int, userId)
-            .query('DELETE FROM nt_notifications WHERE id = @notificationId AND cuserid = @userId');
+    await executeNonQuery(
+        'DELETE FROM nt_notifications WHERE id = @notificationId AND cuserid = @userId',
+        { notificationId, userId }
+    );
 
-        res.json({ success: true });
-    } catch (error) {
-        console.error('Error deleting notification:', error);
-        res.status(500).json({
-            success: false,
-            message: 'Failed to delete notification',
-            error: error.message
-        });
-    }
+    res.json({ success: true });
 };
 
 export const getUserStats = async (req: AuthRequest, res: Response) => {
-    try {
-        const userId = req.user!.id;
-        const pool = await getSQLServerPool();
+    const userId = req.user!.id;
 
-        const [postCount, followersCount, followingCount, totalLikes] = await Promise.all([
-            pool.request()
-                .input('userId', sql.Int, userId)
-                .query('SELECT COUNT(*) as count FROM nt_posts WHERE cuserid = @userId'),
-            pool.request()
-                .input('userId', sql.Int, userId)
-                .query('SELECT COUNT(*) as count FROM nt_follows WHERE following_id = @userId'),
-            pool.request()
-                .input('userId', sql.Int, userId)
-                .query('SELECT COUNT(*) as count FROM nt_follows WHERE follower_id = @userId'),
-            pool.request()
-                .input('userId', sql.Int, userId)
-                .query(`
-                    SELECT COUNT(*) as count FROM nt_reactions r 
-                    JOIN nt_posts p ON r.post_id = p.id 
-                    WHERE p.cuserid = @userId
-                `)
-        ]);
+    const postCount = await executeQuery<any>(
+        'SELECT COUNT(*) as count FROM nt_posts WHERE cuserid = @userId',
+        { userId }
+    );
 
-        res.json({
-            success: true,
-            stats: {
-                posts: postCount.recordset[0]?.count || 0,
-                followers: followersCount.recordset[0]?.count || 0,
-                following: followingCount.recordset[0]?.count || 0,
-                totalLikes: totalLikes.recordset[0]?.count || 0
-            }
-        });
-    } catch (error) {
-        console.error('Error getting user stats:', error);
-        res.status(500).json({
-            success: false,
-            message: 'Failed to get user stats',
-            error: error.message
-        });
-    }
+    const followersCount = await executeQuery<any>(
+        'SELECT COUNT(*) as count FROM nt_follows WHERE following_id = @userId',
+        { userId }
+    );
+
+    const followingCount = await executeQuery<any>(
+        'SELECT COUNT(*) as count FROM nt_follows WHERE follower_id = @userId',
+        { userId }
+    );
+
+    const totalLikes = await executeQuery<any>(
+        `SELECT COUNT(*) as count FROM nt_reactions r 
+         JOIN nt_posts p ON r.post_id = p.id 
+         WHERE p.cuserid = @userId`,
+        { userId }
+    );
+
+    res.json({
+        success: true,
+        stats: {
+            posts: postCount[0]?.count || 0,
+            followers: followersCount[0]?.count || 0,
+            following: followingCount[0]?.count || 0,
+            totalLikes: totalLikes[0]?.count || 0
+        }
+    });
 };
 
 export const getActivityLog = async (req: AuthRequest, res: Response) => {
-    try {
-        const userId = req.user!.id;
-        const { limit = 50 } = req.query;
+    const userId = req.user!.id;
+    const limit = parseInt(req.query.limit as string) || 50;
 
-        const logs = await ActivityLog.find({ userId: userId.toString() })
-            .sort({ timestamp: -1 })
-            .limit(Number(limit));
+    const logs = await ActivityLog.find({ userId: userId.toString() })
+        .sort({ timestamp: -1 })
+        .limit(limit);
 
-        res.json({ success: true, logs });
-    } catch (error) {
-        console.error('Error getting activity log:', error);
-        res.status(500).json({
-            success: false,
-            message: 'Failed to get activity log',
-            error: error.message
-        });
-    }
+    res.json({ success: true, logs });
 };
 
 export const changePassword = async (req: AuthRequest, res: Response) => {
-    try {
-        const { currentPassword, newPassword } = req.body;
-        const userId = req.user!.id;
-        const pool = await getSQLServerPool();
+    const { currentPassword, newPassword } = req.body;
+    const userId = req.user!.id;
 
-        const userResult = await pool.request()
-            .input('userId', sql.Int, userId)
-            .query('SELECT password_hash FROM users WHERE id = @userId');
+    const users = await executeQuery<any>(
+        'SELECT password_hash FROM users WHERE id = @userId',
+        { userId }
+    );
 
-        const user = userResult.recordset[0];
+    const user = users[0];
 
-        const isValid = await bcrypt.compare(currentPassword, user.password_hash);
-        if (!isValid) {
-            throw new AppError('Current password is incorrect', 401);
-        }
-
-        const hashedPassword = await bcrypt.hash(newPassword, 12);
-
-        await pool.request()
-            .input('passwordHash', sql.NVarChar, hashedPassword)
-            .input('userId', sql.Int, userId)
-            .query('UPDATE users SET password_hash = @passwordHash WHERE id = @userId');
-
-        // Invalidate all sessions
-        await pool.request()
-            .input('userId', sql.Int, userId)
-            .query('DELETE FROM nt_sessions WHERE cuserid = @userId');
-
-        res.json({ success: true, message: 'Password changed successfully' });
-    } catch (error) {
-        console.error('Error changing password:', error);
-        res.status(500).json({
-            success: false,
-            message: error.message || 'Failed to change password',
-            error: error.message
-        });
+    if (!user) {
+        throw new AppError('User not found', 404);
     }
+
+    const isValid = await bcrypt.compare(currentPassword, user.password_hash);
+    if (!isValid) {
+        throw new AppError('Current password is incorrect', 401);
+    }
+
+    const hashedPassword = await bcrypt.hash(newPassword, 12);
+
+    await executeNonQuery(
+        'UPDATE users SET password_hash = @hashedPassword WHERE id = @userId',
+        { hashedPassword, userId }
+    );
+
+    // Invalidate all sessions
+    await executeNonQuery(
+        'DELETE FROM nt_sessions WHERE cuserid = @userId',
+        { userId }
+    );
+
+    res.json({ success: true, message: 'Password changed successfully' });
 };
 
 export const deactivateAccount = async (req: AuthRequest, res: Response) => {
+    const userId = req.user!.id;
+    const { password } = req.body;
+
+    const users = await executeQuery<any>(
+        'SELECT password_hash FROM users WHERE id = @userId',
+        { userId }
+    );
+
+    const user = users[0];
+    
+    if (!user) {
+        throw new AppError('User not found', 404);
+    }
+
+    const isValid = await bcrypt.compare(password, user.password_hash);
+
+    if (!isValid) {
+        throw new AppError('Invalid password', 401);
+    }
+
+    await executeNonQuery(
+        'UPDATE users SET is_active = 0 WHERE id = @userId',
+        { userId }
+    );
+
+    await executeNonQuery(
+        'DELETE FROM nt_sessions WHERE cuserid = @userId',
+        { userId }
+    );
+
+    res.json({ success: true, message: 'Account deactivated' });
+};
+
+// Additional user management functions
+
+export const getTopUsers = async (req: AuthRequest, res: Response) => {
+    try {
+        const limit = parseInt(req.query.limit as string) || 10;
+
+        const topUsers = await executeQuery<any>(
+            `SELECT TOP ${limit}
+                u.id, 
+                u.username, 
+                u.full_name, 
+                u.avatar_url,
+                COUNT(DISTINCT p.id) as post_count,
+                COUNT(DISTINCT r.id) as total_likes,
+                COUNT(DISTINCT f.follower_id) as follower_count
+             FROM users u
+             LEFT JOIN nt_posts p ON u.id = p.cuserid AND p.status = 'approved'
+             LEFT JOIN nt_reactions r ON p.id = r.post_id
+             LEFT JOIN nt_follows f ON u.id = f.following_id
+             GROUP BY u.id, u.username, u.full_name, u.avatar_url
+             ORDER BY post_count DESC, total_likes DESC`
+        );
+
+        res.json({
+            success: true,
+            users: topUsers
+        });
+    } catch (error) {
+        console.error('Error getting top users:', error);
+        res.status(500).json({ success: false, message: 'Failed to get top users' });
+    }
+};
+
+export const getSuggestedUsers = async (req: AuthRequest, res: Response) => {
     try {
         const userId = req.user!.id;
-        const { password } = req.body;
-        const pool = await getSQLServerPool();
+        const limit = parseInt(req.query.limit as string) || 10;
 
-        const userResult = await pool.request()
-            .input('userId', sql.Int, userId)
-            .query('SELECT password_hash FROM users WHERE id = @userId');
+        const suggestedUsers = await executeQuery<any>(
+            `SELECT TOP ${limit}
+                u.id, 
+                u.username, 
+                u.full_name, 
+                u.avatar_url,
+                (SELECT COUNT(*) FROM nt_follows WHERE following_id = u.id) as follower_count
+             FROM users u
+             WHERE u.id != @userId
+             AND u.id NOT IN (
+                 SELECT following_id FROM nt_follows WHERE follower_id = @userId
+             )
+             AND u.is_active = 1
+             ORDER BY NEWID()`,
+            { userId }
+        );
 
-        const user = userResult.recordset[0];
-        const isValid = await bcrypt.compare(password, user.password_hash);
+        res.json({
+            success: true,
+            users: suggestedUsers
+        });
+    } catch (error) {
+        console.error('Error getting suggested users:', error);
+        res.status(500).json({ success: false, message: 'Failed to get suggested users' });
+    }
+};
 
-        if (!isValid) {
-            throw new AppError('Invalid password', 401);
+export const updateNotificationSettings = async (req: AuthRequest, res: Response) => {
+    try {
+        const userId = req.user!.id;
+        const { email_notifications, push_notifications, in_app_notifications } = req.body;
+
+        // Check if settings exist
+        const existing = await executeQuery<any>(
+            'SELECT id FROM nt_notification_settings WHERE cuserid = @userId',
+            { userId }
+        );
+
+        if (existing && existing.length > 0) {
+            await executeNonQuery(
+                `UPDATE nt_notification_settings 
+                 SET email_notifications = @email,
+                     push_notifications = @push,
+                     in_app_notifications = @inApp,
+                     updated_at = GETDATE()
+                 WHERE cuserid = @userId`,
+                {
+                    userId,
+                    email: email_notifications ? 1 : 0,
+                    push: push_notifications ? 1 : 0,
+                    inApp: in_app_notifications ? 1 : 0
+                }
+            );
+        } else {
+            await executeNonQuery(
+                `INSERT INTO nt_notification_settings 
+                 (cuserid, email_notifications, push_notifications, in_app_notifications, created_at, updated_at)
+                 VALUES (@userId, @email, @push, @inApp, GETDATE(), GETDATE())`,
+                {
+                    userId,
+                    email: email_notifications ? 1 : 0,
+                    push: push_notifications ? 1 : 0,
+                    inApp: in_app_notifications ? 1 : 0
+                }
+            );
         }
 
-        await pool.request()
-            .input('userId', sql.Int, userId)
-            .query('UPDATE users SET is_active = 0 WHERE id = @userId');
-
-        await pool.request()
-            .input('userId', sql.Int, userId)
-            .query('DELETE FROM nt_sessions WHERE cuserid = @userId');
-
-        res.json({ success: true, message: 'Account deactivated' });
-    } catch (error) {
-        console.error('Error deactivating account:', error);
-        res.status(500).json({
-            success: false,
-            message: error.message || 'Failed to deactivate account',
-            error: error.message
+        res.json({
+            success: true,
+            message: 'Notification settings updated successfully'
         });
+    } catch (error) {
+        console.error('Error updating notification settings:', error);
+        res.status(500).json({ success: false, message: 'Failed to update notification settings' });
+    }
+};
+
+export const getNotificationSettings = async (req: AuthRequest, res: Response) => {
+    try {
+        const userId = req.user!.id;
+
+        const settings = await executeQuery<any>(
+            `SELECT 
+                email_notifications, 
+                push_notifications, 
+                in_app_notifications 
+             FROM nt_notification_settings 
+             WHERE cuserid = @userId`,
+            { userId }
+        );
+
+        const defaultSettings = {
+            email_notifications: true,
+            push_notifications: true,
+            in_app_notifications: true
+        };
+
+        res.json({
+            success: true,
+            settings: settings[0] || defaultSettings
+        });
+    } catch (error) {
+        console.error('Error getting notification settings:', error);
+        res.status(500).json({ success: false, message: 'Failed to get notification settings' });
     }
 };
