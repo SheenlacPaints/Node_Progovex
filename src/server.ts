@@ -115,7 +115,7 @@ console.log('SQL_SERVER_DATABASE:', process.env.SQL_SERVER_DATABASE);
 app.use(helmet());
 app.use(compression());
 app.use(cors({
-    origin: ['http://localhost:4200', 'http://localhost:3000', 'http://127.0.0.1:4200'],
+    origin: ['devtaskflow.sheenlac.com','http://localhost:4200', 'http://localhost:3000', 'http://127.0.0.1:4200'],
     credentials: true,
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
     allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Accept', 'Origin'],
