@@ -24,6 +24,7 @@ Thumbs.db
 *~
 
 dist
+/dist
 
 
 # Coverage directory

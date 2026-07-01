@@ -5,15 +5,34 @@ import { AuthRequest } from '../middleware/auth';
 import { sendEmail } from '../workers/emailWorker';
 import sql from 'mssql';
 
+const convertToProxyUrl = (mediaUrl: string): string => {
+  if (!mediaUrl) return mediaUrl;
+
+  if (mediaUrl.includes('/media/stream')) {
+    return mediaUrl;
+  }
+
+  if (mediaUrl.includes('s3.amazonaws.com') || mediaUrl.includes('amazonaws.com')) {
+    try {
+      const key = mediaUrl.split('.amazonaws.com/')[1];
+      if (key) {
+        const baseUrl = process.env.APP_URL;
+        return `${baseUrl}/media/stream?key=${encodeURIComponent(key)}`;
+      }
+    } catch (error) {
+      console.error('Error converting to proxy URL:', error);
+      return mediaUrl;
+    }
+  }
+  return mediaUrl;
+};
+
 export const getPendingPosts = async (req: AuthRequest, res: Response) => {
   try {
     const page = parseInt(req.query.page as string) || 1;
     const limit = parseInt(req.query.limit as string) || 20;
     const offset = (page - 1) * limit;
 
-    console.log('Fetching pending posts:', { page, limit, offset });
-
-    // SQL Server query with OFFSET FETCH instead of LIMIT OFFSET
     const query = `
       SELECT 
         p.*, 
@@ -30,7 +49,23 @@ export const getPendingPosts = async (req: AuthRequest, res: Response) => {
 
     const posts = await executeQuery<any>(query, { offset, limit });
 
-    // Get total count
+    // Process each post to convert media URLs
+    const processedPosts = posts.map(post => {
+      if (post.media_urls) {
+        try {
+          const mediaUrls = JSON.parse(post.media_urls);
+          if (Array.isArray(mediaUrls)) {
+            const proxiedUrls = mediaUrls.map(url => convertToProxyUrl(url));
+            post.media_urls = JSON.stringify(proxiedUrls);
+            post.mediaUrls = proxiedUrls; // For frontend convenience
+          }
+        } catch (error) {
+          console.error('Error parsing media URLs:', error);
+        }
+      }
+      return post;
+    });
+
     const countResult = await executeQuery<any>(
       `SELECT COUNT(*) as total 
        FROM nt_posts p
@@ -39,11 +74,9 @@ export const getPendingPosts = async (req: AuthRequest, res: Response) => {
 
     const total = countResult[0]?.total || 0;
 
-    console.log(`Found ${posts.length} pending posts out of ${total} total`);
-
     res.json({
       success: true,
-      posts: posts,
+      posts: processedPosts,
       pagination: {
         page,
         limit,

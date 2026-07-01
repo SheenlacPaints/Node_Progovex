@@ -6,12 +6,107 @@ import { AppError } from '../middleware/errorHandler';
 import sharp from 'sharp';
 import path from 'path';
 import fs from 'fs/promises';
+import { v4 as uuidv4 } from 'uuid';
 import moment from 'moment-timezone';
 import sql from 'mssql';
+import { s3Helper } from '../helpers/s3.helper';
 
 const getIo = (req: AuthRequest) => {
     return req.app.get('io');
 };
+
+// ==============================================
+// UPLOAD TO S3 HELPER
+// ==============================================
+const uploadToS3 = async (
+    file: any,
+    folderType: string = 'images' // 'image' or 'video'
+): Promise<string> => {
+    try {
+
+        console.log("folderType,", folderType);
+        // Create folder structure: progovex-post/{folderType}/
+        const folderPath = `Progovex_Dev_Post/${folderType}`;
+
+        // Generate unique filename
+        const fileExtension = path.extname(file.originalname);
+        const fileName = `${uuidv4()}${fileExtension}`;
+
+        // Process image if it's an image
+        let fileBuffer = file.buffer;
+        let contentType = file.mimetype;
+
+        if (folderType === 'images' && file.mimetype.startsWith('image/')) {
+            // Compress and convert to webp
+            fileBuffer = await sharp(file.buffer)
+                .resize(1200, 1200, { fit: 'inside', withoutEnlargement: true })
+                .webp({ quality: 80 })
+                .toBuffer();
+            contentType = 'image/webp';
+
+            // Update extension to webp
+            const newFileName = `${uuidv4()}.webp`;
+            const result = await s3Helper.uploadFile(fileBuffer, {
+                folderPath: folderPath,
+                fileName: newFileName,
+                contentType: contentType,
+                metadata: {
+                    'original-name': file.originalname,
+                    'file-size': file.size.toString(),
+                    'processed': 'true',
+                },
+            });
+            return result.url;
+        } else {
+            // Video or other files - keep original extension
+            const result = await s3Helper.uploadFile(fileBuffer, {
+                folderPath: folderPath,
+                fileName: fileName,
+                contentType: contentType,
+                metadata: {
+                    'original-name': file.originalname,
+                    'file-size': file.size.toString(),
+                },
+            });
+            return result.url;
+        }
+    } catch (error) {
+        console.error('Error uploading to S3:', error);
+        throw new Error(`Failed to upload file to S3: ${error.message}`);
+    }
+};
+
+// ==============================================
+// DELETE FROM S3 HELPER
+// ==============================================
+const deleteFromS3 = async (mediaUrls: string[]): Promise<void> => {
+    try {
+        if (!mediaUrls || mediaUrls.length === 0) return;
+
+        // Extract keys from URLs
+        const keys: string[] = [];
+        for (const url of mediaUrls) {
+            try {
+                // Extract key from URL
+                const key = url.split('.amazonaws.com/')[1];
+                if (key) {
+                    keys.push(key);
+                }
+            } catch (error) {
+                console.error('Error extracting key from URL:', error);
+            }
+        }
+
+        if (keys.length > 0) {
+            const deletedCount = await s3Helper.deleteMultipleFiles(keys);
+            console.log(`🗑️ Deleted ${deletedCount} files from S3`);
+        }
+    } catch (error) {
+        console.error('Error deleting from S3:', error);
+        // Don't throw error, just log it
+    }
+};
+
 
 // Helper function to process images
 const processImage = async (filePath: string): Promise<string> => {
@@ -48,52 +143,17 @@ export const createPost = async (req: AuthRequest, res: Response) => {
             hashtags
         });
 
-        // Process uploaded files
-        const mediaUrls: string[] = [];
-        const fileSizes: number[] = [];
-
-        if (req.files && (req.files as any[]).length > 0) {
-            console.log(`📁 Processing ${(req.files as any[]).length} files`);
-
-            for (const file of req.files as any[]) {
-                console.log(`📄 File: ${file.originalname}, Size: ${(file.size / (1024 * 1024)).toFixed(2)}MB, Type: ${file.mimetype}`);
-                fileSizes.push(file.size);
-
-                let filePath = file.path;
-
-                // Only process images (videos are kept as-is)
-                if (file.mimetype.startsWith('image/')) {
-                    try {
-                        filePath = await processImage(file.path);
-                        console.log(`🖼️ Image processed: ${filePath}`);
-                    } catch (err) {
-                        console.error('Error processing image:', err);
-                    }
-                } else {
-                    console.log(`🎥 Video file saved: ${filePath}`);
-                }
-
-                let url = filePath.replace(/\\/g, '/');
-                url = url.replace(/^backend\//, '');
-                if (!url.startsWith('/uploads/')) {
-                    url = `/uploads/${url}`;
-                }
-                mediaUrls.push(url);
-            }
-        }
-
-        // Ensure pollData is properly stringified if it exists
+        let imageUrls: string[] = [];
+        let videoUrls: string[] = [];
+        let mediaUrls: string[] = [];
         let finalPollData = null;
+
+        // Prepare poll data
         if (pollData) {
-            if (typeof pollData === 'string') {
-                finalPollData = pollData;
-            } else {
-                finalPollData = JSON.stringify(pollData);
-            }
-            console.log('📊 Poll data prepared for storage:', finalPollData.substring(0, 200));
+            finalPollData = typeof pollData === 'string' ? pollData : JSON.stringify(pollData);
         }
 
-        // Insert post with SQL Server syntax - using OUTPUT INSERTED.id to get the ID
+        // 1. Insert post first to get postId
         const query = `
             INSERT INTO nt_posts (
                 cuserid,  
@@ -117,13 +177,12 @@ export const createPost = async (req: AuthRequest, res: Response) => {
                 userId,
                 content: content || null,
                 type: type || 'text',
-                mediaUrls: JSON.stringify(mediaUrls),
+                mediaUrls: JSON.stringify([]), // Temporary empty array
                 pollData: finalPollData,
                 hashtags: hashtags ? JSON.stringify(hashtags) : null
             }
         );
 
-        // Get the inserted ID from the result
         const postId = result && result.length > 0 ? result[0].id : null;
 
         if (!postId) {
@@ -132,20 +191,59 @@ export const createPost = async (req: AuthRequest, res: Response) => {
 
         console.log(`✅ Post created with ID: ${postId}`);
 
-        // Get user info for the post
+        // 2. Upload files to S3 if any
+        if (req.files && (req.files as any[]).length > 0) {
+            console.log(`📁 Uploading ${(req.files as any[]).length} files to S3`);
+
+            for (const file of req.files as any[]) {
+                try {
+                    let url: string;
+
+                    // Check if it's an image or video
+                    if (file.mimetype.startsWith('image/')) {
+                        url = await uploadToS3(file, 'images');
+                        imageUrls.push(url);
+                    } else if (file.mimetype.startsWith('video/')) {
+                        url = await uploadToS3(file, 'videos');
+                        videoUrls.push(url);
+                    } else {
+                        // Other files - store in image folder for simplicity
+                        url = await uploadToS3(file, 'images');
+                        imageUrls.push(url);
+                    }
+
+                    mediaUrls.push(url);
+                } catch (error) {
+                    console.error('Error uploading file to S3:', error);
+                    // Continue with other files
+                }
+            }
+
+            // 3. Update post with actual media URLs
+            if (mediaUrls.length > 0) {
+                await executeNonQuery(
+                    'UPDATE nt_posts SET media_urls = @mediaUrls WHERE id = @postId',
+                    {
+                        mediaUrls: JSON.stringify(mediaUrls),
+                        postId: postId
+                    }
+                );
+            }
+        }
+
+        // 4. Get user info for the post
         const userRows = await executeQuery<any>(
             'SELECT cuser_name as username, cuser_name as full_name, cprofile_image_name as avatar_url FROM users WHERE id = @userId',
             { userId }
         );
         const user = userRows[0];
 
-        // Get the created post with timestamps
+        // 5. Get the created post with timestamps
         const newPostRows = await executeQuery<any>(
             `SELECT 
                 id, cuserid, content, type, media_urls, poll_data, hashtags,
                 status, approval_status, likes_count, comments_count, shares_count,
-                created_at, approved_at,
-                FORMAT(created_at, 'yyyy-MM-dd HH:mm:ss') as created_at_formatted
+                created_at, approved_at
              FROM nt_posts 
              WHERE id = @postId`,
             { postId }
@@ -157,7 +255,7 @@ export const createPost = async (req: AuthRequest, res: Response) => {
             throw new Error('Failed to retrieve created post');
         }
 
-        // Parse pollData for response if it exists
+        // Parse pollData for response
         let responsePollData = null;
         if (finalPollData) {
             try {
@@ -173,6 +271,8 @@ export const createPost = async (req: AuthRequest, res: Response) => {
             content: content,
             type: type || 'text',
             mediaUrls: mediaUrls,
+            imageUrls: imageUrls,
+            videoUrls: videoUrls,
             hashtags: hashtags || [],
             pollData: responsePollData,
             status: 'pending',
@@ -185,7 +285,7 @@ export const createPost = async (req: AuthRequest, res: Response) => {
             user: user
         };
 
-        // EMIT SOCKET EVENT FOR NEW POST
+        // 6. Emit socket event
         const io = getIo(req);
         if (io) {
             io.emit('post_created', newPost);
@@ -196,8 +296,12 @@ export const createPost = async (req: AuthRequest, res: Response) => {
             success: true,
             message: 'Post created and awaiting admin approval',
             post: newPost,
-            created_at: createdPost.created_at
+            created_at: createdPost.created_at,
+            mediaUrls: mediaUrls,
+            imageUrls: imageUrls,
+            videoUrls: videoUrls
         });
+
     } catch (error) {
         console.error('Error creating post:', error);
         res.status(500).json({
@@ -208,6 +312,33 @@ export const createPost = async (req: AuthRequest, res: Response) => {
     }
 };
 
+const convertToProxyUrl = (mediaUrl: string): string => {
+    if (!mediaUrl) return mediaUrl;
+
+    // If it's already a proxy URL, return as is
+    if (mediaUrl.includes('/media/stream')) {
+        return mediaUrl;
+    }
+
+    // If it's an S3 URL, convert to proxy URL
+    if (mediaUrl.includes('s3.amazonaws.com') || mediaUrl.includes('amazonaws.com')) {
+        try {
+            const key = mediaUrl.split('.amazonaws.com/')[1];
+            if (key) {
+                // ✅ Use the correct base URL with /node prefix
+                const baseUrl = process.env.APP_URL;
+                return `${baseUrl}/media/stream?key=${encodeURIComponent(key)}`;
+            }
+        } catch (error) {
+            console.error('Error converting to proxy URL:', error);
+            return mediaUrl;
+        }
+    }
+    return mediaUrl;
+};
+
+// In postController.ts
+
 export const getPosts = async (req: AuthRequest, res: Response) => {
     try {
         const page = parseInt(req.query.page as string) || 1;
@@ -217,18 +348,14 @@ export const getPosts = async (req: AuthRequest, res: Response) => {
 
         const search = req.query.search as string || '';
         const filterType = req.query.filterType as string || 'all';
-        const sortBy = req.query.sortBy as string || 'latest';
 
-        // Build WHERE clause - Using correct column names
         let whereConditions: string[] = [
             "p.status = 'approved'",
-            "p.approval_status = 'approved'",
-            "(p.is_reshare = 0 OR p.is_reshare = 1)"
+            "p.approval_status = 'approved'"
         ];
 
         let params: any = { userId };
 
-        // Search filter - Using cuser_name
         if (search) {
             const searchPattern = `%${search}%`;
             whereConditions.push(`(
@@ -239,80 +366,25 @@ export const getPosts = async (req: AuthRequest, res: Response) => {
             params.searchPattern = searchPattern;
         }
 
-        // Filter type: saved posts - Only if table exists
-        if (filterType === 'saved') {
-            try {
-                const tableCheck = await executeQuery<any>(
-                    "SELECT * FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME = 'nt_saved_posts'"
-                );
-                if (tableCheck && tableCheck.length > 0) {
-                    whereConditions.push(`EXISTS (SELECT 1 FROM nt_saved_posts sp WHERE sp.post_id = p.id AND sp.cuserid = @userId)`);
-                } else {
-                    console.log('⚠️ nt_saved_posts table does not exist, skipping saved filter');
-                    return res.json({
-                        success: true,
-                        posts: [],
-                        page,
-                        limit,
-                        total: 0,
-                        totalPages: 0
-                    });
-                }
-            } catch (err) {
-                console.log('⚠️ Error checking nt_saved_posts table:', err);
-                return res.json({
-                    success: true,
-                    posts: [],
-                    page,
-                    limit,
-                    total: 0,
-                    totalPages: 0
-                });
-            }
-        }
-
-        // Filter type: my posts
         if (filterType === 'my-posts') {
             whereConditions.push(`p.cuserid = @userId`);
         }
 
         const whereClause = whereConditions.join(' AND ');
 
-        // Main query
+        // ✅ Updated query to include original post data
         const query = `
             SELECT 
-                p.id,
-                p.cuserid,
-                p.content,
-                p.type,
-                p.media_urls,
-                p.hashtags,
-                p.poll_data,
-                p.status,
-                p.approval_status,
-                p.likes_count,
-                p.comments_count,
-                p.shares_count,
-                p.view_count,
-                p.created_at,
-                p.updated_at,
-                p.original_post_id,
-                p.is_reshare,
-                p.approved_at,
-                p.approved_by,
+                p.*,
                 u.cuser_name as username,
                 u.cuser_name as full_name,
                 u.cprofile_image_name as avatar_url,
-                FORMAT(p.approved_at, 'yyyy-MM-dd HH:mm:ss') as approved_at_formatted,
                 FORMAT(p.created_at, 'yyyy-MM-dd HH:mm:ss') as created_at_formatted,
-                (SELECT COUNT(*) FROM nt_reactions WHERE post_id = p.id) as likes_count_agg,
-                (SELECT COUNT(*) FROM nt_comments WHERE post_id = p.id AND status = 'active') as comments_count_agg,
                 (SELECT COUNT(*) FROM nt_reactions WHERE post_id = p.id AND cuserid = @userId) as user_liked,
-                (SELECT COUNT(*) FROM nt_reshares WHERE original_post_id = p.id AND cuserid = @userId) as user_reshared,
-                (SELECT option_id FROM nt_poll_votes WHERE post_id = p.id AND cuserid = @userId) as user_voted_option,
-                op.id as original_id, 
-                op.content as original_content, 
-                op.cuserid as original_user_id,
+                (SELECT COUNT(*) FROM nt_saved_posts WHERE post_id = p.id AND cuserid = @userId) as user_saved,
+                -- Original post data for reshared posts
+                op.id as original_id,
+                op.content as original_content,
                 op.type as original_type,
                 op.media_urls as original_media_urls,
                 op.poll_data as original_poll_data,
@@ -322,16 +394,17 @@ export const getPosts = async (req: AuthRequest, res: Response) => {
                 op.shares_count as original_shares_count,
                 op.created_at as original_created_at,
                 op.approved_at as original_approved_at,
-                ou.cuser_name as original_username, 
+                op.cuserid as original_user_id,
+                ou.cuser_name as original_username,
                 ou.cuser_name as original_full_name,
                 ou.cprofile_image_name as original_avatar_url,
-                COALESCE(p.approved_at, p.created_at) as post_publish_time
+                (SELECT option_id FROM nt_poll_votes WHERE post_id = op.id AND cuserid = @userId) as original_user_voted_option
             FROM nt_posts p
             JOIN users u ON p.cuserid = u.cuserid
             LEFT JOIN nt_posts op ON p.original_post_id = op.id
-            LEFT JOIN users ou ON op.cuserid = ou.cuserid
+            LEFT JOIN users ou ON op.cuserid = ou.id
             WHERE ${whereClause}
-            ORDER BY post_publish_time DESC
+            ORDER BY p.created_at DESC
             OFFSET @offset ROWS FETCH NEXT @limit ROWS ONLY
         `;
 
@@ -343,109 +416,114 @@ export const getPosts = async (req: AuthRequest, res: Response) => {
 
         const posts = await executeQuery<any>(query, queryParams);
 
-        // Count query - FIXED: Use the same params that were used in the main query
-        let countQuery = `
-            SELECT COUNT(DISTINCT p.id) as total
-            FROM nt_posts p
-            JOIN users u ON p.cuserid = u.cuserid
-            WHERE ${whereClause}
-        `;
-
-        // If filter is 'saved', we need to join with nt_saved_posts for count
-        if (filterType === 'saved') {
-            countQuery = `
-                SELECT COUNT(DISTINCT p.id) as total
-                FROM nt_posts p
-                JOIN users u ON p.cuserid = u.cuserid
-                JOIN nt_saved_posts sp ON p.id = sp.post_id AND sp.cuserid = @userId
-                WHERE ${whereClause.replace(/EXISTS \(SELECT 1 FROM nt_saved_posts sp WHERE sp.post_id = p.id AND sp.cuserid = @userId\)/g, '1=1')}
-            `;
-        }
-
-        // FIXED: Pass the same params to the count query
-        const countResult = await executeQuery<any>(countQuery, params);
-        const total = countResult[0]?.total || 0;
-
-        // Process posts with media
+        // Process posts with media (convert to proxy URLs)
         const postsWithMedia = posts.map(post => {
-            let originalMediaUrls = [];
-            let originalPollData = null;
-            let originalHashtags = [];
-
-            if (post.original_media_urls) {
+            // Parse and convert media URLs
+            let mediaUrls = [];
+            if (post.media_urls) {
                 try {
-                    originalMediaUrls = JSON.parse(post.original_media_urls);
+                    const parsedUrls = typeof post.media_urls === 'string'
+                        ? JSON.parse(post.media_urls)
+                        : post.media_urls;
+
+                    if (Array.isArray(parsedUrls)) {
+                        mediaUrls = parsedUrls.map(url => convertToProxyUrl(url));
+                    }
                 } catch {
-                    originalMediaUrls = [];
+                    mediaUrls = [];
                 }
             }
 
-            if (post.original_poll_data) {
-                try {
-                    originalPollData = JSON.parse(post.original_poll_data);
-                } catch {
-                    originalPollData = null;
+            // Separate images and videos
+            const imageUrls = mediaUrls.filter((url: string) =>
+                url.match(/\.(jpg|jpeg|png|gif|webp|bmp|svg)$/i)
+            );
+            const videoUrls = mediaUrls.filter((url: string) =>
+                url.match(/\.(mp4|webm|avi|mov|mkv|flv)$/i)
+            );
+
+            // ✅ Process original post data for reshared posts
+            let originalPostData = null;
+            if (post.original_id) {
+                let originalMediaUrls = [];
+                if (post.original_media_urls) {
+                    try {
+                        const parsedOriginalUrls = typeof post.original_media_urls === 'string'
+                            ? JSON.parse(post.original_media_urls)
+                            : post.original_media_urls;
+                        if (Array.isArray(parsedOriginalUrls)) {
+                            originalMediaUrls = parsedOriginalUrls.map(url => convertToProxyUrl(url));
+                        }
+                    } catch {
+                        originalMediaUrls = [];
+                    }
                 }
-            }
 
-            if (post.original_hashtags) {
-                try {
-                    originalHashtags = JSON.parse(post.original_hashtags);
-                } catch {
-                    originalHashtags = [];
+                let originalPollData = null;
+                if (post.original_poll_data) {
+                    try {
+                        originalPollData = typeof post.original_poll_data === 'string'
+                            ? JSON.parse(post.original_poll_data)
+                            : post.original_poll_data;
+                    } catch {
+                        originalPollData = null;
+                    }
                 }
-            }
 
-            const likesCount = post.likes_count_agg || post.likes_count || 0;
-            const commentsCount = post.comments_count_agg || post.comments_count || 0;
+                let originalHashtags = [];
+                if (post.original_hashtags) {
+                    try {
+                        originalHashtags = typeof post.original_hashtags === 'string'
+                            ? JSON.parse(post.original_hashtags)
+                            : post.original_hashtags;
+                    } catch {
+                        originalHashtags = [];
+                    }
+                }
 
-            return {
-                id: post.id,
-                cuserid: post.cuserid,
-                content: post.content,
-                type: post.type,
-                mediaUrls: post.media_urls ? JSON.parse(post.media_urls) : [],
-                hashtags: post.hashtags ? JSON.parse(post.hashtags) : [],
-                pollData: post.poll_data ? JSON.parse(post.poll_data) : null,
-                status: post.status,
-                approval_status: post.approval_status,
-                likes_count: likesCount,
-                comments_count: commentsCount,
-                shares_count: post.shares_count || 0,
-                view_count: post.view_count || 0,
-                created_at: post.created_at,
-                updated_at: post.updated_at,
-                approved_at: post.approved_at,
-                original_post_id: post.original_post_id,
-                is_reshare: post.is_reshare,
-                username: post.username,
-                full_name: post.full_name,
-                avatar_url: post.avatar_url,
-                userLiked: post.user_liked === 1 || post.user_liked === true,
-                userReshared: post.user_reshared === 1 || post.user_reshared === true,
-                userVotedOption: post.user_voted_option !== null ? Number(post.user_voted_option) : null,
-                userSaved: false,
-                display_date: post.approved_at || post.created_at,
-                post_publish_time: post.post_publish_time || post.approved_at || post.created_at,
-                originalPost: post.original_id ? {
+                originalPostData = {
                     id: post.original_id,
                     content: post.original_content,
                     cuserid: post.original_user_id,
                     username: post.original_username,
                     full_name: post.original_full_name,
                     avatar_url: post.original_avatar_url,
-                    type: post.original_type || 'text',
                     mediaUrls: originalMediaUrls,
+                    type: post.original_type || 'text',
                     pollData: originalPollData,
                     hashtags: originalHashtags,
                     likes_count: post.original_likes_count || 0,
                     comments_count: post.original_comments_count || 0,
                     shares_count: post.original_shares_count || 0,
                     created_at: post.original_created_at,
-                    approved_at: post.original_approved_at
-                } : null
+                    approved_at: post.original_approved_at,
+                    display_date: post.original_approved_at || post.original_created_at,
+                    userVotedOption: post.original_user_voted_option || null
+                };
+            }
+
+            return {
+                ...post,
+                mediaUrls: mediaUrls,
+                imageUrls: imageUrls,
+                videoUrls: videoUrls,
+                media_urls: JSON.stringify(mediaUrls),
+                userLiked: post.user_liked === 1 || post.user_liked === true,
+                user_saved: post.user_saved === 1 || post.user_saved === true,
+                originalPost: originalPostData // ✅ Include original post data
             };
         });
+
+        // Count total
+        const countQuery = `
+            SELECT COUNT(DISTINCT p.id) as total
+            FROM nt_posts p
+            JOIN users u ON p.cuserid = u.cuserid
+            WHERE ${whereClause}
+        `;
+
+        const countResult = await executeQuery<any>(countQuery, params);
+        const total = countResult[0]?.total || 0;
 
         res.json({
             success: true,
@@ -1425,6 +1503,24 @@ export const resharePost = async (req: AuthRequest, res: Response) => {
 
         console.log('🔄 Reshare request:', { originalPostId: id, userId, comment, includeOriginal });
 
+        // Get original post with user details
+        const originalPost = await executeQuery<any>(
+            `SELECT p.*, u.cuser_name as username, u.cuser_name as full_name, u.cprofile_image_name as avatar_url
+             FROM nt_posts p
+             JOIN users u ON p.cuserid = u.id
+             WHERE p.id = @postId`,
+            { postId: parseInt(id) }
+        );
+
+        if (!originalPost || originalPost.length === 0) {
+            return res.status(404).json({
+                success: false,
+                message: 'Original post not found'
+            });
+        }
+
+        const original = originalPost[0];
+
         // Check if user already reshared with the EXACT SAME comment
         if (comment) {
             const existingReshare = await executeQuery<any>(
@@ -1440,39 +1536,44 @@ export const resharePost = async (req: AuthRequest, res: Response) => {
             }
         }
 
-        // Get original post
-        const originalPost = await executeQuery<any>(
-            'SELECT * FROM nt_posts WHERE id = @postId',
-            { postId: parseInt(id) }
-        );
-
-        if (!originalPost || originalPost.length === 0) {
-            return res.status(404).json({
-                success: false,
-                message: 'Original post not found'
-            });
+        // Parse original media URLs
+        let originalMediaUrls = [];
+        if (original.media_urls) {
+            try {
+                originalMediaUrls = typeof original.media_urls === 'string'
+                    ? JSON.parse(original.media_urls)
+                    : original.media_urls;
+            } catch {
+                originalMediaUrls = [];
+            }
         }
 
-        let resharedPostId = null;
+        // Create reshare post record - include original media
+        const reshareContent = comment || `Reshared a post by @${original.username || 'user'}`;
 
-        // Create reshare post record
-        const reshareContent = comment
-            ? comment
-            : `Reshared a post by @${originalPost[0].username || 'user'}`;
+        // ✅ IMPORTANT: Include original media URLs in the reshare
+        const mediaUrlsToInclude = includeOriginal ? originalMediaUrls : [];
 
         const result = await executeNonQuery(
-            `INSERT INTO nt_posts (cuserid, content, type, media_urls, original_post_id, is_reshare, status, approval_status, created_at)
-             VALUES (@userId, @content, @type, @mediaUrls, @postId, 1, 'approved', 'approved', GETDATE())`,
+            `INSERT INTO nt_posts (
+                cuserid, content, type, media_urls, original_post_id, is_reshare, 
+                status, approval_status, created_at, likes_count, comments_count, shares_count
+             )
+             OUTPUT INSERTED.id
+             VALUES (
+                 @userId, @content, @type, @mediaUrls, @postId, 1, 
+                 'approved', 'approved', GETDATE(), 0, 0, 0
+             )`,
             {
                 userId,
                 content: reshareContent,
-                type: originalPost[0].type,
-                mediaUrls: includeOriginal ? originalPost[0].media_urls : '[]',
+                type: original.type || 'text',
+                mediaUrls: JSON.stringify(mediaUrlsToInclude),
                 postId: parseInt(id)
             }
         );
 
-        resharedPostId = result.recordset?.[0]?.id || result.insertId;
+        const resharedPostId = result.recordset?.[0]?.id || result.insertId;
 
         // Create reshare record
         await executeNonQuery(
@@ -1505,23 +1606,47 @@ export const resharePost = async (req: AuthRequest, res: Response) => {
             { userId }
         );
 
+        // Get original user info
+        const originalUserInfo = await executeQuery<any>(
+            'SELECT cuser_name as username, cuser_name as full_name, cprofile_image_name as avatar_url FROM users WHERE id = @originalUserId',
+            { originalUserId: original.cuserid }
+        );
+
+        // Convert media URLs to proxy URLs
+        const proxyMediaUrls = mediaUrlsToInclude.map(url => convertToProxyUrl(url));
+        const originalProxyMediaUrls = originalMediaUrls.map(url => convertToProxyUrl(url));
+
+        // Build reshared post object
         const resharedPost = {
             id: resharedPostId,
             cuserid: userId,
             content: reshareContent,
-            type: originalPost[0].type,
-            mediaUrls: includeOriginal ? JSON.parse(originalPost[0].media_urls || '[]') : [],
+            type: original.type || 'text',
+            mediaUrls: proxyMediaUrls,
             original_post_id: parseInt(id),
             is_reshare: true,
             created_at: new Date(),
             user: userInfo[0],
-            original_post: {
-                id: originalPost[0].id,
-                content: originalPost[0].content,
-                cuserid: originalPost[0].cuserid,
-                username: originalPost[0].username,
-                full_name: originalPost[0].full_name,
-                mediaUrls: JSON.parse(originalPost[0].media_urls || '[]')
+            likes_count: 0,
+            comments_count: 0,
+            shares_count: 0,
+            originalPost: {
+                id: original.id,
+                content: original.content,
+                cuserid: original.cuserid,
+                username: original.username,
+                full_name: original.full_name,
+                avatar_url: original.avatar_url,
+                mediaUrls: originalProxyMediaUrls,
+                type: original.type || 'text',
+                pollData: original.poll_data ? JSON.parse(original.poll_data) : null,
+                hashtags: original.hashtags ? JSON.parse(original.hashtags) : [],
+                likes_count: original.likes_count || 0,
+                comments_count: original.comments_count || 0,
+                shares_count: original.shares_count || 0,
+                created_at: original.created_at,
+                approved_at: original.approved_at,
+                display_date: original.approved_at || original.created_at
             }
         };
 
@@ -1548,7 +1673,8 @@ export const resharePost = async (req: AuthRequest, res: Response) => {
         console.error('Error resharing post:', error);
         res.status(500).json({
             success: false,
-            message: 'Failed to reshare post'
+            message: 'Failed to reshare post',
+            error: error.message
         });
     }
 };

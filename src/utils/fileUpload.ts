@@ -35,11 +35,18 @@ const fileFilter = (req: any, file: any, cb: any) => {
 };
 
 export const upload = multer({
-    storage: storage,
+    storage: multer.memoryStorage(),
     limits: {
-        fileSize: 500 * 1024 * 1024 // 500MB limit for videos
+        fileSize: 50 * 1024 * 1024, // 50MB limit
     },
-    fileFilter: fileFilter
+    fileFilter: (req, file, cb) => {
+        // Allow images and videos
+        if (file.mimetype.startsWith('image/') || file.mimetype.startsWith('video/')) {
+            cb(null, true);
+        } else {
+            cb(new Error('Only images and videos are allowed'));
+        }
+    },
 });
 
 // Process and optimize images (videos are not processed to maintain quality)

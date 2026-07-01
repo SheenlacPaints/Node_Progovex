@@ -36,7 +36,7 @@ import { strictLimiter } from '../middleware/rateLimiter';
 const router = Router();
 
 // Protected routes (require authentication)
-router.post('/', authenticateToken, upload.array('media', 5), createPost);
+router.post('/', authenticateToken, upload.array('media', 10), createPost);
 router.get('/', authenticateToken, getPosts);
 router.get('/feed', authenticateToken, getFeed);
 router.get('/saved', authenticateToken, getSavedPosts);
