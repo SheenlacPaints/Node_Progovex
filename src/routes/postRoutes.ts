@@ -32,6 +32,7 @@ import {
 import { authenticateToken, authorizeModerator } from '../middleware/auth';
 import { upload } from '../utils/fileUpload';
 import { strictLimiter } from '../middleware/rateLimiter';
+import { decryptRequest } from '../middleware/encryption';
 
 const router = Router();
 
@@ -48,7 +49,7 @@ router.get('/simple', authenticateToken, getPostsSimple);
 
 // Comment routes
 router.get('/:id/comments', authenticateToken, getComments);
-router.post('/comments', authenticateToken, strictLimiter, addComment);
+router.post('/comments', decryptRequest,authenticateToken, strictLimiter, addComment);
 router.delete('/comments/:id', authenticateToken, deleteComment);
 router.post('/comments/:id/like', authenticateToken, addCommentReaction);
 router.delete('/comments/:id/like', authenticateToken, removeCommentReaction);
@@ -74,7 +75,7 @@ router.get('/:id/poll/user-vote', authenticateToken, getUserPollVote);
 
 // Add these routes to your existing router
 // Reshare routes
-router.post('/:id/reshare', authenticateToken, resharePost);
+router.post('/:id/reshare', decryptRequest,authenticateToken, resharePost);
 router.delete('/:id/reshare', authenticateToken, unResharePost);
 router.get('/:id/reshare/status', authenticateToken, getReshareStatus);
 router.get('/reshared/feed', authenticateToken, getResharedFeed);

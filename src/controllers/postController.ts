@@ -348,6 +348,7 @@ export const getPosts = async (req: AuthRequest, res: Response) => {
 
         const search = req.query.search as string || '';
         const filterType = req.query.filterType as string || 'all';
+        const sortByType = req.query.sortBy as string || '';
 
         let whereConditions: string[] = [
             "p.status = 'approved'",
@@ -365,17 +366,55 @@ export const getPosts = async (req: AuthRequest, res: Response) => {
             )`);
             params.searchPattern = searchPattern;
         }
-
-        if (filterType === 'my-posts') {
+        var orderBy = "desc";
+        if ((filterType === 'all') && (sortByType == "latest")) {
+            orderBy = "p.created_at desc";
+        }else if ((filterType === 'all') && (sortByType == "oldest")) {
+            orderBy = "p.created_at asc";
+        }
+        else if ((filterType === 'all') && (sortByType == "most-liked")) {
+            orderBy = "p.likes_count desc";
+        }
+        else if ((filterType === 'all') && (sortByType == "most-commented")) {
+            orderBy = "p.comments_count desc";
+        }
+        else if ((filterType === 'my-posts') && (sortByType == "latest")) {
             whereConditions.push(`p.cuserid = @userId`);
+            orderBy = "p.created_at desc";
+        }else if ((filterType === 'my-posts') && (sortByType == "oldest")) {
+            whereConditions.push(`p.cuserid = @userId`);
+            orderBy = "p.created_at asc";
+        }
+        else if ((filterType === 'my-posts') && (sortByType == "most-liked")) {
+            whereConditions.push(`p.cuserid = @userId`);
+            orderBy = "p.likes_count desc";
+        }
+        else if ((filterType === 'my-posts') && (sortByType == "most-commented")) {
+            whereConditions.push(`p.cuserid = @userId`);
+            orderBy = "p.comments_count desc";
+        }
+        else if((filterType === 'saved') && (sortByType == "latest")){
+            whereConditions.push(`p.id IN ( SELECT post_id FROM nt_saved_posts WHERE cuserid = @userId )`);
+            orderBy = "p.created_at desc";
+        }else if((filterType === 'saved') && (sortByType == "oldest")){
+            whereConditions.push(`p.id IN ( SELECT post_id FROM nt_saved_posts WHERE cuserid = @userId )`);
+            orderBy = "p.created_at asc";
+        }        
+        else if((filterType === 'saved') && (sortByType == "most-liked")){
+            whereConditions.push(`p.id IN ( SELECT post_id FROM nt_saved_posts WHERE cuserid = @userId )`);
+            orderBy = "p.likes_count desc";
+        }        
+        else if((filterType === 'saved') && (sortByType == "most-commented")){
+            whereConditions.push(`p.id IN ( SELECT post_id FROM nt_saved_posts WHERE cuserid = @userId )`);
+            orderBy = "p.comments_count desc";
         }
 
         const whereClause = whereConditions.join(' AND ');
 
         // ✅ Updated query to include original post data
         const query = `
-            SELECT 
-                p.*,
+            SELECT p.*,
+                FORMAT(p.created_at, 'yyyy-MM-dd HH:mm:ss') as created_at,
                 u.cuser_name as username,
                 u.cuser_name as full_name,
                 u.cprofile_image_name as avatar_url,
@@ -392,7 +431,7 @@ export const getPosts = async (req: AuthRequest, res: Response) => {
                 op.likes_count as original_likes_count,
                 op.comments_count as original_comments_count,
                 op.shares_count as original_shares_count,
-                op.created_at as original_created_at,
+                FORMAT(p.created_at, 'yyyy-MM-dd HH:mm:ss') as original_created_at,
                 op.approved_at as original_approved_at,
                 op.cuserid as original_user_id,
                 ou.cuser_name as original_username,
@@ -404,7 +443,7 @@ export const getPosts = async (req: AuthRequest, res: Response) => {
             LEFT JOIN nt_posts op ON p.original_post_id = op.id
             LEFT JOIN users ou ON op.cuserid = ou.id
             WHERE ${whereClause}
-            ORDER BY p.created_at DESC
+            ORDER BY ${orderBy}
             OFFSET @offset ROWS FETCH NEXT @limit ROWS ONLY
         `;
 
@@ -418,6 +457,9 @@ export const getPosts = async (req: AuthRequest, res: Response) => {
 
         // Process posts with media (convert to proxy URLs)
         const postsWithMedia = posts.map(post => {
+            if(post.created_at.length){
+                post.created_at = post.created_at[1]
+            }
             // Parse and convert media URLs
             let mediaUrls = [];
             if (post.media_urls) {
@@ -731,10 +773,17 @@ export const addComment = async (req: AuthRequest, res: Response) => {
 
         const comment = comments[0];
 
+        // Get comment count
+        const commentArr = await executeQuery<any>(
+            `SELECT content,cuserid FROM nt_comments WHERE post_id = @postId`,
+            { postId: parseInt(postId) }
+        );
+        const commentCounts = commentArr.length
+
         // Update post comments count
         await executeNonQuery(
-            'UPDATE nt_posts SET comments_count = comments_count WHERE id = @postId',
-            { postId: parseInt(postId) }
+            'UPDATE nt_posts SET comments_count = @comments_count WHERE id = @postId',
+            { postId: parseInt(postId), comments_count:parseInt(commentCounts) }
         );
 
         // Get updated count
@@ -794,9 +843,9 @@ export const deleteComment = async (req: AuthRequest, res: Response) => {
 
 export const addReaction = async (req: AuthRequest, res: Response) => {
     try {
-        const { postId } = req.body;
+        // const { postId } = req.body;
+        const postId = req.params.id
         const userId = req.user.id;
-
         console.log('❤️ Toggling like for post:', postId, 'User:', userId);
 
         // Check if already liked
@@ -1507,7 +1556,7 @@ export const resharePost = async (req: AuthRequest, res: Response) => {
         const originalPost = await executeQuery<any>(
             `SELECT p.*, u.cuser_name as username, u.cuser_name as full_name, u.cprofile_image_name as avatar_url
              FROM nt_posts p
-             JOIN users u ON p.cuserid = u.id
+             JOIN users u ON p.cuserid = u.cuserid
              WHERE p.id = @postId`,
             { postId: parseInt(id) }
         );
