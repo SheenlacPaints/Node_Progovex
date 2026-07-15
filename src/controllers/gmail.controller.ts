@@ -126,16 +126,6 @@ function getFolderFromLabels(labels: string[]): string {
     return 'inbox';
 }
 
-// ✅ Get total count from database
-async function getTotalCount(cuserid: number, folder: string): Promise<number> {
-    const result = await executeQuery<any>(
-        'SELECT COUNT(*) as total FROM nt_user_emails WHERE cuserid = @cuserid AND folder = @folder',
-        { cuserid, folder }
-    );
-    return result[0]?.total || 0;
-}
-
-// ✅ Get label map
 function getLabelMap(): Record<string, string> {
     return {
         'inbox': 'INBOX',
@@ -146,7 +136,6 @@ function getLabelMap(): Record<string, string> {
     };
 }
 
-// ✅ Clear cache function
 export const clearEmailCache = (cuserid: number) => {
     const keysToDelete: string[] = [];
     for (const key of emailCache.keys()) {
@@ -157,7 +146,7 @@ export const clearEmailCache = (cuserid: number) => {
     for (const key of keysToDelete) {
         emailCache.delete(key);
     }
-    console.log(`🧹 Cleared ${keysToDelete.length} cache entries for user ${cuserid}`);
+    console.log(`Cleared ${keysToDelete.length} cache entries for user ${cuserid}`);
 };
 
 // ==============================================
@@ -166,9 +155,9 @@ export const clearEmailCache = (cuserid: number) => {
 
 export const handleGmailAuth = async (req: Request, res: Response) => {
     try {
-        const { cuserid } = req.query;
+        const { cuserid, force, prompt } = req.query;
 
-        console.log('🔑 Gmail Auth Request:', { cuserid });
+        console.log('Gmail Auth Request:', { cuserid, force, prompt });
 
         if (!cuserid) {
             return res.status(400).json({
@@ -185,9 +174,14 @@ export const handleGmailAuth = async (req: Request, res: Response) => {
             });
         }
 
-        const authUrl = gmailService.getAuthUrl(cuserid.toString());
+        // Get auth URL with proper parameters
+        const authUrl = gmailService.getAuthUrl(
+            cuserid.toString(),
+            force === 'true',
+            prompt === 'consent'
+        );
 
-        console.log(`🔑 User ${cuserid} starting Gmail auth`);
+        console.log(`User ${cuserid} starting Gmail auth (force: ${force}, prompt: ${prompt})`);
 
         res.redirect(authUrl);
     } catch (error) {
@@ -196,49 +190,6 @@ export const handleGmailAuth = async (req: Request, res: Response) => {
             success: false,
             message: 'Failed to initiate Gmail authentication'
         });
-    }
-};
-
-export const warmGmailCache = async (cuserid: number) => {
-    try {
-        console.log(`🔥 Warming cache for user ${cuserid}`);
-
-        const tokens = await getGmailTokens(cuserid);
-        if (!tokens) return;
-
-        gmailService.setUserCredentials(tokens);
-
-        // ✅ Fetch first page only
-        const result = await gmailService.getEmailsOptimized(
-            cuserid.toString(),
-            undefined,
-            10,
-            ['INBOX'],
-            undefined
-        );
-
-        const cacheKey = `${cuserid}_inbox_first_10_`;
-        emailCache.set(cacheKey, {
-            emails: result.emails,
-            nextPageToken: result.nextPageToken,
-            total: result.resultSizeEstimate,
-            timestamp: Date.now()
-        });
-
-        console.log(`✅ Cache warmed for user ${cuserid}`);
-    } catch (error) {
-        console.error('Error warming cache:', error);
-    }
-};
-
-export const preFetchEmails = async (cuserid: number) => {
-    try {
-        console.log(`🚀 Pre-fetching emails for user ${cuserid}`);
-        await syncEmailsInBackground(cuserid, 'inbox');
-        await syncEmailsInBackground(cuserid, 'sent');
-        console.log(`✅ Pre-fetch completed for user ${cuserid}`);
-    } catch (error) {
-        console.error('Error pre-fetching emails:', error);
     }
 };
 
@@ -253,7 +204,7 @@ export const handleGmailCallback = async (req: Request, res: Response) => {
             });
         }
 
-        console.log('📞 Callback received with state:', state);
+        console.log('Callback received with state:', state);
 
         let cuserid: string;
 
@@ -262,7 +213,7 @@ export const handleGmailCallback = async (req: Request, res: Response) => {
                 const decoded = Buffer.from(state as string, 'base64').toString();
                 const stateObj = JSON.parse(decoded);
                 cuserid = stateObj.cuserid;
-                console.log('✅ Decoded state from base64:', { cuserid });
+                console.log('Decoded state from base64:', { cuserid });
             } catch (error) {
                 console.error('Error decoding state:', error);
                 return res.status(400).json({
@@ -285,7 +236,7 @@ export const handleGmailCallback = async (req: Request, res: Response) => {
             });
         }
 
-        console.log(`📞 Callback received for user ${cuserid}`);
+        console.log(`Callback received for user ${cuserid}`);
 
         const tokens = await gmailService.getTokens(code as string);
 
@@ -293,11 +244,10 @@ export const handleGmailCallback = async (req: Request, res: Response) => {
         const profile = await gmailService.getUserProfile();
         const userEmail = profile.emailAddress;
 
-        console.log(`✅ User ${cuserid} connected Gmail: ${userEmail}`);
+        console.log(`User ${cuserid} connected Gmail: ${userEmail}`);
 
         const cuseridNum = parseInt(cuserid as string);
 
-        // Check if token exists
         const existingToken = await executeQuery<any>(
             'SELECT id FROM nt_user_gmail_tokens WHERE cuserid = @cuserid',
             { cuserid: cuseridNum }
@@ -321,7 +271,7 @@ export const handleGmailCallback = async (req: Request, res: Response) => {
                     expiresAt: tokens.expiry_date ? new Date(tokens.expiry_date) : null
                 }
             );
-            console.log('✅ Token updated for user:', cuserid);
+            console.log('Token updated for user:', cuserid);
         } else {
             await executeNonQuery(
                 `INSERT INTO nt_user_gmail_tokens (cuserid, email, access_token, refresh_token, expires_at, created_at, updated_at)
@@ -334,14 +284,9 @@ export const handleGmailCallback = async (req: Request, res: Response) => {
                     expiresAt: tokens.expiry_date ? new Date(tokens.expiry_date) : null
                 }
             );
-            console.log('✅ New token inserted for user:', cuserid);
+            console.log('New token inserted for user:', cuserid);
         }
-        await warmGmailCache(cuseridNum);
-        setImmediate(() => {
-            preFetchEmails(cuseridNum).catch(err =>
-                console.error('Pre-fetch error:', err)
-            );
-        });
+
         res.redirect(`http://localhost:4200/#/user/email?gmail=connected`);
 
     } catch (error) {
@@ -351,20 +296,54 @@ export const handleGmailCallback = async (req: Request, res: Response) => {
 };
 
 // ==============================================
-// OPTIMIZED GET EMAILS
+// GET EMAILS
 // ==============================================
 export const getGmailEmails = async (req: AuthRequest, res: Response) => {
     try {
-        console.log("Reached getGmailEmails");
         const user = await getUserFromToken(req);
         const folder = req.query.folder as string || 'inbox';
         const page = parseInt(req.query.page as string) || 1;
-        const limit = Math.min(parseInt(req.query.limit as string) || 20, 20);
+        const limit = Math.min(parseInt(req.query.limit as string) || 20, 50);
         const offset = (page - 1) * limit;
 
-        console.log(`📧 Fetching emails for user ${user.cuserid} - folder: ${folder}`);
+        console.log(`Fetching emails for user ${user.cuserid} - folder: ${folder}, page: ${page}, limit: ${limit}`);
 
-        // ✅ ALWAYS check database cache first (this is fast)
+        // Get total count first (fast with index)
+        const countResult = await executeQuery<any>(
+            'SELECT COUNT(*) as total FROM nt_user_emails WHERE cuserid = @cuserid AND folder = @folder',
+            { cuserid: user.cuserid, folder: folder }
+        );
+
+        // IMPORTANT: Make sure total is a number
+        const totalFromDb = countResult && countResult.length > 0 ? Number(countResult[0]?.total || 0) : 0;
+
+        console.log(`Total emails in DB for folder ${folder}: ${totalFromDb}`);
+
+        // If no emails in DB, trigger sync and return empty with loading flag
+        if (totalFromDb === 0) {
+            console.log('No emails in DB, triggering background sync...');
+
+            // Start background sync
+            setImmediate(() => {
+                syncEmailsInBackground(user.cuserid, folder).catch(err =>
+                    console.error('Background sync error:', err)
+                );
+            });
+
+            return res.json({
+                success: true,
+                emails: [],
+                page: page,
+                limit: limit,
+                total: 0,
+                hasMore: false,
+                fromCache: false,
+                loading: true,
+                message: 'Loading emails...'
+            });
+        }
+
+        // Get paginated emails with optimized query
         const cachedEmails = await executeQuery<any>(
             `SELECT * FROM nt_user_emails 
              WHERE cuserid = @cuserid AND folder = @folder
@@ -378,75 +357,51 @@ export const getGmailEmails = async (req: AuthRequest, res: Response) => {
             }
         );
 
-        // ✅ Get total count
-        const countResult = await executeQuery<any>(
-            'SELECT COUNT(*) as total FROM nt_user_emails WHERE cuserid = @cuserid AND folder = @folder',
-            { cuserid: user.cuserid, folder: folder }
-        );
-        const totalFromDb = countResult[0]?.total || 0;
+        // Parse emails
+        const parsedEmails = cachedEmails.map(email => ({
+            id: email.gmail_id,
+            threadId: email.thread_id,
+            from: { name: email.from_name, email: email.from_email },
+            to: JSON.parse(email.to_emails || '[]'),
+            cc: JSON.parse(email.cc_emails || '[]'),
+            bcc: JSON.parse(email.bcc_emails || '[]'),
+            subject: email.subject,
+            snippet: email.snippet,
+            body: email.body,
+            isRead: email.is_read === 1,
+            isStarred: email.is_starred === 1,
+            hasAttachments: email.has_attachments === 1,
+            attachments: JSON.parse(email.attachments || '[]'),
+            labels: JSON.parse(email.labels || '[]'),
+            date: email.date,
+            createdAt: email.created_at
+        }));
 
-        // ✅ If we have cached emails, return them
-        if (cachedEmails && cachedEmails.length > 0) {
-            console.log(`📦 Returning ${cachedEmails.length} emails from database cache`);
-
-            const parsedEmails = cachedEmails.map(email => ({
-                id: email.gmail_id,
-                threadId: email.thread_id,
-                from: { name: email.from_name, email: email.from_email },
-                to: JSON.parse(email.to_emails || '[]'),
-                cc: JSON.parse(email.cc_emails || '[]'),
-                bcc: JSON.parse(email.bcc_emails || '[]'),
-                subject: email.subject,
-                snippet: email.snippet,
-                body: email.body,
-                isRead: email.is_read === 1,
-                isStarred: email.is_starred === 1,
-                hasAttachments: email.has_attachments === 1,
-                attachments: JSON.parse(email.attachments || '[]'),
-                labels: JSON.parse(email.labels || '[]'),
-                date: email.date,
-                createdAt: email.created_at
-            }));
-
-            // ✅ Trigger background sync to check for new emails
+        // Check if we need to sync in background
+        if (totalFromDb < 50) {
             setImmediate(() => {
                 syncEmailsInBackground(user.cuserid, folder).catch(err =>
                     console.error('Background sync error:', err)
                 );
             });
-
-            return res.json({
-                success: true,
-                emails: parsedEmails,
-                page: page,
-                limit: limit,
-                total: totalFromDb,
-                fromCache: true,
-                count: parsedEmails.length
-            });
         }
 
-        // ✅ NO CACHE - Return empty response immediately
-        // The first request will return empty, but subsequent requests will have data
-        console.log('🔄 No cache found. Returning empty and starting background sync...');
+        // Calculate if there are more pages
+        const totalPages = Math.ceil(totalFromDb / limit);
+        const hasMore = page < totalPages;
 
-        // ✅ Start background sync (don't await)
-        setImmediate(() => {
-            syncEmailsInBackground(user.cuserid, folder).catch(err =>
-                console.error('Background sync error:', err)
-            );
-        });
+        console.log(`Returning ${parsedEmails.length} emails, total: ${totalFromDb}, hasMore: ${hasMore}`);
 
-        // ✅ Return empty array immediately (no waiting for Gmail API)
         res.json({
             success: true,
-            emails: [],
+            emails: parsedEmails,
             page: page,
             limit: limit,
-            total: 0,
-            fromCache: false,
-            loading: true,
-            message: 'Loading emails... Please refresh in a moment'
+            total: totalFromDb, // This should be the actual total count
+            totalPages: totalPages,
+            hasMore: hasMore,
+            fromCache: true,
+            count: parsedEmails.length
         });
 
     } catch (error) {
@@ -455,147 +410,529 @@ export const getGmailEmails = async (req: AuthRequest, res: Response) => {
             success: false,
             message: error.message || 'Failed to fetch emails',
             emails: [],
-            total: 0
+            total: 0,
+            hasMore: false
         });
     }
 };
-async function syncEmailsInBackground(cuserid: number, folder: string) {
-    try {
-        // ✅ Add a timeout to prevent hanging
-        const timeoutPromise = new Promise((_, reject) => {
-            setTimeout(() => reject(new Error('Background sync timeout')), 30000);
-        });
 
-        const syncPromise = (async () => {
-            console.log(`🔄 Background sync started for user ${cuserid}, folder: ${folder}`);
-
-            const tokens = await getGmailTokens(cuserid);
-            if (!tokens) {
-                console.log('❌ No tokens found for background sync');
-                return;
-            }
-
-            gmailService.setUserCredentials(tokens);
-
-            const result = await gmailService.getEmailsOptimized(
-                cuserid.toString(),
-                undefined,
-                20,
-                [getLabelMap()[folder] || 'INBOX'],
-                undefined
-            );
-
-            if (result.emails.length > 0) {
-                console.log(`📥 Found ${result.emails.length} emails, saving to cache...`);
-                for (const email of result.emails) {
-                    await saveEmailToDatabase(cuserid, email);
-                }
-                console.log(`✅ Background sync completed: ${result.emails.length} emails saved`);
-            }
-        })();
-
-        await Promise.race([syncPromise, timeoutPromise]);
-    } catch (error) {
-        console.error('Error in background sync:', error);
-    }
-}
-
-export const clearEmailCacheDev = async (req: AuthRequest, res: Response) => {
+export const syncAllGmailEmails = async (req: AuthRequest, res: Response) => {
     try {
         const user = await getUserFromToken(req);
+        const maxResults = parseInt(req.query.maxResults as string) || 500;
 
-        // Clear memory cache
+        console.log(`Starting full sync for user ${user.cuserid} with max ${maxResults} emails`);
+
+        const tokens = await getGmailTokens(user.cuserid);
+        if (!tokens) {
+            return res.status(400).json({
+                success: false,
+                message: 'Please connect your Gmail account first'
+            });
+        }
+
+        gmailService.setUserCredentials(tokens);
+
+        // Sync all folders
+        const folders = ['INBOX', 'SENT', 'DRAFT', 'TRASH', 'SPAM'];
+        let totalSynced = 0;
+        const folderResults: Record<string, number> = {};
+
+        // Emit progress via socket if available
+        const io = req.app.get('io');
+
+        for (const folder of folders) {
+            console.log(`Syncing folder: ${folder}`);
+
+            // Emit progress
+            if (io) {
+                io.to(`user_${user.cuserid}`).emit('sync_progress', {
+                    folder: folder,
+                    current: totalSynced,
+                    total: maxResults * folders.length,
+                    status: 'syncing'
+                });
+            }
+
+            try {
+                const result = await gmailService.getEmailsOptimized(
+                    user.cuserid.toString(),
+                    undefined,
+                    Math.min(maxResults, 500), // Limit per folder to 500
+                    [folder],
+                    undefined
+                );
+
+                let folderCount = 0;
+                for (const email of result.emails) {
+                    await saveEmailToDatabase(user.cuserid, email);
+                    folderCount++;
+                    totalSynced++;
+                }
+
+                folderResults[folder] = folderCount;
+                console.log(`Synced ${folderCount} emails from ${folder}`);
+
+                // Update progress
+                if (io) {
+                    io.to(`user_${user.cuserid}`).emit('sync_progress', {
+                        folder: folder,
+                        current: totalSynced,
+                        total: maxResults * folders.length,
+                        status: 'completed',
+                        folderCount: folderCount
+                    });
+                }
+            } catch (folderError) {
+                console.error(`Error syncing folder ${folder}:`, folderError);
+                folderResults[folder] = 0;
+            }
+        }
+
+        // Clear cache after sync
         clearEmailCache(user.cuserid);
 
-        // Clear database cache
-        await executeNonQuery(
-            'DELETE FROM nt_user_emails WHERE cuserid = @cuserid',
-            { cuserid: user.cuserid }
-        );
+        // Final progress update
+        if (io) {
+            io.to(`user_${user.cuserid}`).emit('sync_progress', {
+                status: 'complete',
+                total: totalSynced,
+                folders: folderResults
+            });
+        }
 
         res.json({
             success: true,
-            message: 'Cache cleared successfully'
+            message: `Synced ${totalSynced} emails across all folders`,
+            count: totalSynced,
+            folders: folderResults
         });
     } catch (error) {
-        console.error('Error clearing cache:', error);
+        console.error('Error syncing all emails:', error);
         res.status(500).json({
             success: false,
-            message: 'Failed to clear cache'
+            message: 'Failed to sync emails: ' + (error.message || 'Unknown error')
         });
     }
 };
 
-// ==============================================
-// STATUS & CONNECTION
-// ==============================================
-
-export const checkGmailStatus = async (req: AuthRequest, res: Response) => {
+// Debug function to check email counts
+export const debugEmailCount = async (req: AuthRequest, res: Response) => {
     try {
         const user = await getUserFromToken(req);
 
-        const result = await executeQuery<any>(
-            `SELECT id, email, expires_at 
-             FROM nt_user_gmail_tokens 
-             WHERE cuserid = @cuserid AND is_active = 1`,
+        // Get counts by folder
+        const folders = ['inbox', 'sent', 'drafts', 'trash', 'spam'];
+        const counts: Record<string, number> = {};
+
+        for (const folder of folders) {
+            const result = await executeQuery<any>(
+                'SELECT COUNT(*) as count FROM nt_user_emails WHERE cuserid = @cuserid AND folder = @folder',
+                { cuserid: user.cuserid, folder }
+            );
+            counts[folder] = result[0]?.count || 0;
+        }
+
+        // Get total
+        const totalResult = await executeQuery<any>(
+            'SELECT COUNT(*) as total FROM nt_user_emails WHERE cuserid = @cuserid',
             { cuserid: user.cuserid }
         );
 
-        const connected = result && result.length > 0;
+        // Get sample of emails
+        const sample = await executeQuery<any>(
+            `SELECT TOP 5 gmail_id, subject, folder, date 
+             FROM nt_user_emails 
+             WHERE cuserid = @cuserid 
+             ORDER BY date DESC`,
+            { cuserid: user.cuserid }
+        );
 
-        if (connected && result[0].expires_at && new Date(result[0].expires_at) < new Date()) {
+        // Get folder counts from Gmail API
+        let gmailCounts: Record<string, number> = {};
+        try {
+            const tokens = await getGmailTokens(user.cuserid);
+            if (tokens) {
+                gmailService.setUserCredentials(tokens);
+                const profile = await gmailService.getUserProfile();
+                gmailCounts = {
+                    inbox: await gmailService.getFolderCount('INBOX'),
+                    sent: await gmailService.getFolderCount('SENT'),
+                    drafts: await gmailService.getFolderCount('DRAFT'),
+                    trash: await gmailService.getFolderCount('TRASH'),
+                    spam: await gmailService.getFolderCount('SPAM')
+                };
+            }
+        } catch (error) {
+            console.error('Error getting Gmail counts:', error);
+        }
+
+        res.json({
+            success: true,
+            database: {
+                counts,
+                total: totalResult[0]?.total || 0,
+                sample: sample || []
+            },
+            gmail: gmailCounts,
+            user: {
+                cuserid: user.cuserid,
+                email: user.email
+            }
+        });
+    } catch (error) {
+        console.error('Error debugging email count:', error);
+        res.status(500).json({
+            success: false,
+            message: 'Failed to debug email count'
+        });
+    }
+};
+
+async function syncEmailsInBackground(cuserid: number, folder: string) {
+    try {
+        console.log(`Background sync started for user ${cuserid}, folder: ${folder}`);
+
+        const tokens = await getGmailTokens(cuserid);
+        if (!tokens) {
+            console.log('No tokens found for background sync');
+            return;
+        }
+
+        gmailService.setUserCredentials(tokens);
+
+        // Check how many emails we already have
+        const countResult = await executeQuery<any>(
+            'SELECT COUNT(*) as total FROM nt_user_emails WHERE cuserid = @cuserid AND folder = @folder',
+            { cuserid, folder }
+        );
+        const total = countResult[0]?.total || 0;
+
+        const syncLimit = total < 100 ? 500 : 50;
+
+        console.log(`Current emails: ${total}, syncing ${syncLimit} emails`);
+
+        // Map folder to Gmail label
+        const folderToLabel: Record<string, string> = {
+            'inbox': 'INBOX',
+            'sent': 'SENT',
+            'drafts': 'DRAFT',
+            'trash': 'TRASH',
+            'spam': 'SPAM'
+        };
+
+        const label = folderToLabel[folder] || 'INBOX';
+
+        const result = await gmailService.getEmailsOptimized(
+            cuserid.toString(),
+            undefined,
+            syncLimit,
+            [label],
+            undefined
+        );
+
+        if (result.emails.length > 0) {
+            console.log(`Found ${result.emails.length} emails, saving to cache...`);
+            let savedCount = 0;
+            for (const email of result.emails) {
+                await saveEmailToDatabase(cuserid, email);
+                savedCount++;
+            }
+            console.log(`Background sync completed: ${savedCount} emails saved`);
+
+            clearEmailCache(cuserid);
+        } else {
+            console.log('No emails found in background sync');
+        }
+    } catch (error: any) {
+        console.error('Error in background sync:', error);
+
+        // Check for scope error
+        if (error?.message?.includes('INSUFFICIENT_SCOPES')) {
+            console.error('User needs to reconnect Gmail with full permissions');
+            // Could notify user via socket or database
+        }
+    }
+}
+
+// ==============================================
+// OTHER CONTROLLER FUNCTIONS
+// ==============================================
+export const checkGmailStatus = async (req: AuthRequest, res: Response) => {
+    try {
+        const user = await getUserFromToken(req);
+        console.log(`Checking Gmail status for user: ${user.cuserid}`);
+
+        // First check if the user exists
+        if (!user || !user.cuserid) {
+            console.log('Invalid user data');
+            return res.status(401).json({
+                success: false,
+                connected: false,
+                message: 'Invalid user'
+            });
+        }
+
+        // Check if the table exists and get token
+        let result;
+        try {
+            result = await executeQuery<any>(
+                `SELECT id, email, expires_at, access_token, refresh_token, is_active
+                 FROM nt_user_gmail_tokens 
+                 WHERE cuserid = @cuserid`,
+                { cuserid: user.cuserid }
+            );
+        } catch (dbError: any) {
+            console.error('Database error:', dbError);
+            // Check if table doesn't exist
+            if (dbError.message?.includes('Invalid object name')) {
+                console.log('Table nt_user_gmail_tokens does not exist');
+                return res.json({
+                    success: true,
+                    connected: false,
+                    email: null,
+                    needsReconnect: false,
+                    message: 'Gmail tokens table not found'
+                });
+            }
+            throw dbError;
+        }
+
+        console.log(`Token query result:`, result);
+
+        // Check if token exists and is active
+        const connected = result && result.length > 0 && result[0].is_active === 1;
+
+        if (!connected) {
+            console.log(`No active token found for user ${user.cuserid}`);
+            return res.json({
+                success: true,
+                connected: false,
+                email: null,
+                needsReconnect: false,
+                message: 'No active Gmail connection'
+            });
+        }
+
+        const tokenData = result[0];
+        console.log(`Found token for user ${user.cuserid}, email: ${tokenData.email}`);
+
+        // Check if token has expired
+        const now = new Date();
+        const expiresAt = tokenData.expires_at ? new Date(tokenData.expires_at) : null;
+
+        if (expiresAt && expiresAt < now) {
+            console.log(`Token expired for user ${user.cuserid}, attempting refresh...`);
             try {
-                const refreshResult = await executeQuery<any>(
-                    'SELECT refresh_token FROM nt_user_gmail_tokens WHERE cuserid = @cuserid',
-                    { cuserid: user.cuserid }
+                const credentials = await gmailService.refreshUserToken(tokenData.refresh_token);
+
+                await executeNonQuery(
+                    `UPDATE nt_user_gmail_tokens 
+                     SET access_token = @accessToken, 
+                         expires_at = @expiresAt,
+                         updated_at = GETDATE()
+                     WHERE cuserid = @cuserid`,
+                    {
+                        cuserid: user.cuserid,
+                        accessToken: credentials.access_token,
+                        expiresAt: credentials.expiry_date ? new Date(credentials.expiry_date) : null
+                    }
                 );
 
-                if (refreshResult && refreshResult.length > 0) {
-                    const credentials = await gmailService.refreshUserToken(refreshResult[0].refresh_token);
+                console.log(`Token refreshed for user ${user.cuserid}`);
 
-                    await executeNonQuery(
-                        `UPDATE nt_user_gmail_tokens 
-                         SET access_token = @accessToken, 
-                             expires_at = @expiresAt,
-                             updated_at = GETDATE()
-                         WHERE cuserid = @cuserid`,
-                        {
-                            cuserid: user.cuserid,
-                            accessToken: credentials.access_token,
-                            expiresAt: credentials.expiry_date ? new Date(credentials.expiry_date) : null
-                        }
-                    );
-
+                // Check scopes after refresh
+                const hasScopes = await checkGmailScopes(user.cuserid);
+                if (!hasScopes) {
+                    console.log(`Insufficient scopes for user ${user.cuserid}`);
                     return res.json({
                         success: true,
                         connected: true,
-                        refreshed: true,
-                        email: result[0].email
+                        email: tokenData.email,
+                        needsReconnect: true,
+                        message: 'Insufficient scopes. Please reconnect.'
                     });
                 }
-            } catch (refreshError) {
+
+                return res.json({
+                    success: true,
+                    connected: true,
+                    refreshed: true,
+                    email: tokenData.email,
+                    needsReconnect: false
+                });
+            } catch (refreshError: any) {
                 console.error('Error refreshing token:', refreshError);
+                // If refresh fails, mark as inactive
+                try {
+                    await executeNonQuery(
+                        `UPDATE nt_user_gmail_tokens SET is_active = 0 WHERE cuserid = @cuserid`,
+                        { cuserid: user.cuserid }
+                    );
+                } catch (updateError) {
+                    console.error('Error updating token status:', updateError);
+                }
+                return res.json({
+                    success: true,
+                    connected: false,
+                    email: null,
+                    needsReconnect: true,
+                    message: 'Token refresh failed. Please reconnect.'
+                });
+            }
+        }
+
+        // Check if token has proper scopes
+        const hasScopes = await checkGmailScopes(user.cuserid);
+        if (!hasScopes) {
+            console.log(`Insufficient scopes for user ${user.cuserid}`);
+            return res.json({
+                success: true,
+                connected: true,
+                email: tokenData.email,
+                needsReconnect: true,
+                message: 'Insufficient scopes. Please reconnect.'
+            });
+        }
+
+        console.log(`Gmail connection verified for user ${user.cuserid}`);
+        res.json({
+            success: true,
+            connected: true,
+            email: tokenData.email,
+            needsReconnect: false,
+            message: 'Connected'
+        });
+    } catch (error) {
+        console.error('Error checking Gmail status:', error);
+        // Don't return 500, return a proper response
+        res.json({
+            success: false,
+            connected: false,
+            message: error.message || 'Failed to check Gmail status',
+            email: null,
+            needsReconnect: false
+        });
+    }
+};
+
+async function checkGmailScopes(cuserid: number): Promise<boolean> {
+    try {
+        const tokens = await getGmailTokens(cuserid);
+        if (!tokens) {
+            console.log(`No tokens found for user ${cuserid}`);
+            return false;
+        }
+
+        gmailService.setUserCredentials(tokens);
+
+        // Try a simple operation that requires basic scope
+        try {
+            // Try to get user profile (requires basic scope)
+            const profile = await gmailService.getUserProfile();
+            console.log(`Profile fetched for user ${cuserid}:`, profile.emailAddress);
+
+            // Try to list messages with a query (requires full scope)
+            try {
+                const result = await gmailService.getMessagesList(undefined, 1);
+                console.log(`Messages list fetched for user ${cuserid}`);
+                return true;
+            } catch (queryError: any) {
+                // If query fails with scope error, it might be a metadata-only token
+                if (queryError?.status === 403 &&
+                    (queryError?.response?.data?.error?.message?.includes('scope') ||
+                        queryError?.message?.includes('Metadata scope'))) {
+                    console.log(`User ${cuserid} has metadata-only scope, needs reconnection`);
+                    return false;
+                }
+                // If query fails with other error, token might still be valid
+                console.log(`Query failed but token might be valid:`, queryError?.message);
+                return true;
+            }
+        } catch (error: any) {
+            console.error(`Error checking scopes for user ${cuserid}:`, error);
+            return false;
+        }
+    } catch (error) {
+        console.error('Error in checkGmailScopes:', error);
+        return false;
+    }
+}
+
+export const debugTokenStatus = async (req: AuthRequest, res: Response) => {
+    try {
+        const user = await getUserFromToken(req);
+
+        // Get token from database
+        const result = await executeQuery<any>(
+            `SELECT id, email, expires_at, is_active, created_at, updated_at
+             FROM nt_user_gmail_tokens 
+             WHERE cuserid = @cuserid`,
+            { cuserid: user.cuserid }
+        );
+
+        let tokenValid = false;
+        let scopeStatus = 'unknown';
+
+        if (result && result.length > 0 && result[0].is_active === 1) {
+            const tokenData = result[0];
+            const now = new Date();
+            const expiresAt = tokenData.expires_at ? new Date(tokenData.expires_at) : null;
+
+            if (!expiresAt || expiresAt > now) {
+                try {
+                    const tokens = await getGmailTokens(user.cuserid);
+                    if (tokens) {
+                        gmailService.setUserCredentials(tokens);
+                        const profile = await gmailService.getUserProfile();
+                        tokenValid = true;
+                        scopeStatus = 'valid';
+
+                        // Check if can query
+                        try {
+                            await gmailService.getMessagesList(undefined, 1);
+                            scopeStatus = 'full';
+                        } catch (queryError: any) {
+                            if (queryError?.message?.includes('Metadata scope')) {
+                                scopeStatus = 'metadata_only';
+                            } else {
+                                scopeStatus = 'limited';
+                            }
+                        }
+                    }
+                } catch (error: any) {
+                    console.error('Error validating token:', error);
+                    scopeStatus = 'invalid';
+                }
             }
         }
 
         res.json({
             success: true,
-            connected: connected,
-            email: connected ? result[0].email : null
+            user: {
+                cuserid: user.cuserid,
+                email: user.email
+            },
+            token: result && result.length > 0 ? {
+                exists: true,
+                email: result[0].email,
+                expires_at: result[0].expires_at,
+                is_active: result[0].is_active === 1,
+                created_at: result[0].created_at,
+                updated_at: result[0].updated_at
+            } : null,
+            tokenValid,
+            scopeStatus,
+            connected: tokenValid && scopeStatus !== 'metadata_only'
         });
     } catch (error) {
-        console.error('Error checking Gmail status:', error);
+        console.error('Error debugging token:', error);
         res.status(500).json({
             success: false,
-            connected: false,
-            message: 'Failed to check Gmail status'
+            message: 'Failed to debug token'
         });
     }
 };
-
-// ==============================================
-// EMAIL CRUD - OTHER METHODS
-// ==============================================
 
 export const getGmailEmail = async (req: AuthRequest, res: Response) => {
     try {
@@ -624,6 +961,55 @@ export const getGmailEmail = async (req: AuthRequest, res: Response) => {
         res.status(500).json({
             success: false,
             message: 'Failed to fetch email'
+        });
+    }
+};
+
+export const debugOAuthFlow = async (req: Request, res: Response) => {
+    try {
+        const { cuserid } = req.query;
+
+        if (!cuserid) {
+            return res.status(400).json({
+                success: false,
+                message: 'cuserid is required'
+            });
+        }
+
+        // Get the auth URL
+        const authUrl = gmailService.getAuthUrl(
+            cuserid.toString(),
+            false,
+            false
+        );
+
+        // Check if token exists
+        const tokenResult = await executeQuery<any>(
+            'SELECT * FROM nt_user_gmail_tokens WHERE cuserid = @cuserid',
+            { cuserid: parseInt(cuserid as string) }
+        );
+
+        res.json({
+            success: true,
+            cuserid: cuserid,
+            authUrl: authUrl,
+            tokenExists: tokenResult && tokenResult.length > 0,
+            tokenDetails: tokenResult && tokenResult.length > 0 ? {
+                email: tokenResult[0].email,
+                is_active: tokenResult[0].is_active,
+                expires_at: tokenResult[0].expires_at
+            } : null,
+            instructions: [
+                '1. Click the authUrl to start OAuth flow',
+                '2. Grant permissions to Google',
+                '3. After redirect, check the token in the database'
+            ]
+        });
+    } catch (error) {
+        console.error('Error debugging OAuth flow:', error);
+        res.status(500).json({
+            success: false,
+            message: 'Failed to debug OAuth flow'
         });
     }
 };
@@ -709,10 +1095,6 @@ export const getGmailFolderCounts = async (req: AuthRequest, res: Response) => {
     }
 };
 
-// ==============================================
-// LABELS
-// ==============================================
-
 export const getGmailLabels = async (req: AuthRequest, res: Response) => {
     try {
         const user = await getUserFromToken(req);
@@ -740,134 +1122,6 @@ export const getGmailLabels = async (req: AuthRequest, res: Response) => {
         });
     }
 };
-
-export const addGmailLabel = async (req: AuthRequest, res: Response) => {
-    try {
-        const user = await getUserFromToken(req);
-        const { id } = req.params;
-        const { label } = req.body;
-
-        const tokens = await getGmailTokens(user.cuserid);
-        if (!tokens) {
-            return res.status(400).json({
-                success: false,
-                message: 'Please connect your Gmail account first'
-            });
-        }
-
-        gmailService.setUserCredentials(tokens);
-
-        const labels = await gmailService.getLabels();
-        let labelId = labels.find((l: any) => l.name === label)?.id;
-
-        if (!labelId) {
-            const newLabel = await gmailService.createLabel(label);
-            labelId = newLabel.id;
-        }
-
-        await gmailService.addLabel(id, labelId);
-
-        const email = await executeQuery<any>(
-            'SELECT labels FROM nt_user_emails WHERE gmail_id = @gmailId AND cuserid = @cuserid',
-            { gmailId: id, cuserid: user.cuserid }
-        );
-
-        let emailLabels = [];
-        if (email && email.length > 0 && email[0].labels) {
-            try {
-                emailLabels = JSON.parse(email[0].labels);
-            } catch (e) {
-                emailLabels = [];
-            }
-        }
-
-        if (!emailLabels.includes(label)) {
-            emailLabels.push(label);
-        }
-
-        await executeNonQuery(
-            'UPDATE nt_user_emails SET labels = @labels WHERE gmail_id = @gmailId AND cuserid = @cuserid',
-            { labels: JSON.stringify(emailLabels), gmailId: id, cuserid: user.cuserid }
-        );
-
-        // Clear cache after label change
-        clearEmailCache(user.cuserid);
-
-        res.json({
-            success: true,
-            message: 'Label added'
-        });
-    } catch (error) {
-        console.error('Error adding label:', error);
-        res.status(500).json({
-            success: false,
-            message: 'Failed to add label'
-        });
-    }
-};
-
-export const removeGmailLabel = async (req: AuthRequest, res: Response) => {
-    try {
-        const user = await getUserFromToken(req);
-        const { id, labelId } = req.params;
-
-        const tokens = await getGmailTokens(user.cuserid);
-        if (!tokens) {
-            return res.status(400).json({
-                success: false,
-                message: 'Please connect your Gmail account first'
-            });
-        }
-
-        gmailService.setUserCredentials(tokens);
-        await gmailService.removeLabel(id, labelId);
-
-        const email = await executeQuery<any>(
-            'SELECT labels FROM nt_user_emails WHERE gmail_id = @gmailId AND cuserid = @cuserid',
-            { gmailId: id, cuserid: user.cuserid }
-        );
-
-        let emailLabels = [];
-        if (email && email.length > 0 && email[0].labels) {
-            try {
-                emailLabels = JSON.parse(email[0].labels);
-            } catch (e) {
-                emailLabels = [];
-            }
-        }
-
-        const labels = await gmailService.getLabels();
-        const label = labels.find((l: any) => l.id === labelId);
-        const labelName = label?.name;
-
-        if (labelName) {
-            emailLabels = emailLabels.filter((l: string) => l !== labelName);
-        }
-
-        await executeNonQuery(
-            'UPDATE nt_user_emails SET labels = @labels WHERE gmail_id = @gmailId AND cuserid = @cuserid',
-            { labels: JSON.stringify(emailLabels), gmailId: id, cuserid: user.cuserid }
-        );
-
-        // Clear cache after label change
-        clearEmailCache(user.cuserid);
-
-        res.json({
-            success: true,
-            message: 'Label removed'
-        });
-    } catch (error) {
-        console.error('Error removing label:', error);
-        res.status(500).json({
-            success: false,
-            message: 'Failed to remove label'
-        });
-    }
-};
-
-// ==============================================
-// SEARCH & SYNC
-// ==============================================
 
 export const searchGmailEmails = async (req: AuthRequest, res: Response) => {
     try {
@@ -937,7 +1191,6 @@ export const syncGmailEmails = async (req: AuthRequest, res: Response) => {
             await saveEmailToDatabase(user.cuserid, email);
         }
 
-        // Clear cache after sync
         clearEmailCache(user.cuserid);
 
         res.json({
@@ -954,10 +1207,6 @@ export const syncGmailEmails = async (req: AuthRequest, res: Response) => {
         });
     }
 };
-
-// ==============================================
-// SEND EMAIL
-// ==============================================
 
 export const sendGmailEmail = async (req: AuthRequest, res: Response) => {
     try {
@@ -1005,7 +1254,6 @@ export const sendGmailEmail = async (req: AuthRequest, res: Response) => {
             attachments
         );
 
-        // Clear cache after sending email
         clearEmailCache(user.cuserid);
 
         res.json({
@@ -1033,10 +1281,6 @@ export const saveGmailDraft = async (req: AuthRequest, res: Response) => {
         });
     }
 };
-
-// ==============================================
-// EMAIL ACTIONS
-// ==============================================
 
 export const toggleGmailStar = async (req: AuthRequest, res: Response) => {
     try {
@@ -1066,7 +1310,6 @@ export const toggleGmailStar = async (req: AuthRequest, res: Response) => {
             { isStarred: !isStarred ? 1 : 0, gmailId: id, cuserid: user.cuserid }
         );
 
-        // Clear cache after action
         clearEmailCache(user.cuserid);
 
         res.json({
@@ -1104,7 +1347,6 @@ export const markGmailRead = async (req: AuthRequest, res: Response) => {
             { gmailId: id, cuserid: user.cuserid }
         );
 
-        // Clear cache after action
         clearEmailCache(user.cuserid);
 
         res.json({
@@ -1141,7 +1383,6 @@ export const markGmailUnread = async (req: AuthRequest, res: Response) => {
             { gmailId: id, cuserid: user.cuserid }
         );
 
-        // Clear cache after action
         clearEmailCache(user.cuserid);
 
         res.json({
@@ -1190,7 +1431,6 @@ export const moveGmailToTrash = async (req: AuthRequest, res: Response) => {
             { folder: 'trash', gmailId: id, cuserid: user.cuserid }
         );
 
-        // Clear cache after action
         clearEmailCache(user.cuserid);
 
         res.json({
@@ -1227,7 +1467,6 @@ export const moveGmailToSpam = async (req: AuthRequest, res: Response) => {
             { folder: 'spam', gmailId: id, cuserid: user.cuserid }
         );
 
-        // Clear cache after action
         clearEmailCache(user.cuserid);
 
         res.json({
@@ -1264,7 +1503,6 @@ export const restoreGmailFromTrash = async (req: AuthRequest, res: Response) => 
             { folder: 'inbox', gmailId: id, cuserid: user.cuserid }
         );
 
-        // Clear cache after action
         clearEmailCache(user.cuserid);
 
         res.json({
@@ -1280,9 +1518,127 @@ export const restoreGmailFromTrash = async (req: AuthRequest, res: Response) => 
     }
 };
 
-// ==============================================
-// ATTACHMENTS
-// ==============================================
+export const addGmailLabel = async (req: AuthRequest, res: Response) => {
+    try {
+        const user = await getUserFromToken(req);
+        const { id } = req.params;
+        const { label } = req.body;
+
+        const tokens = await getGmailTokens(user.cuserid);
+        if (!tokens) {
+            return res.status(400).json({
+                success: false,
+                message: 'Please connect your Gmail account first'
+            });
+        }
+
+        gmailService.setUserCredentials(tokens);
+
+        const labels = await gmailService.getLabels();
+        let labelId = labels.find((l: any) => l.name === label)?.id;
+
+        if (!labelId) {
+            const newLabel = await gmailService.createLabel(label);
+            labelId = newLabel.id;
+        }
+
+        await gmailService.addLabel(id, labelId);
+
+        const email = await executeQuery<any>(
+            'SELECT labels FROM nt_user_emails WHERE gmail_id = @gmailId AND cuserid = @cuserid',
+            { gmailId: id, cuserid: user.cuserid }
+        );
+
+        let emailLabels = [];
+        if (email && email.length > 0 && email[0].labels) {
+            try {
+                emailLabels = JSON.parse(email[0].labels);
+            } catch (e) {
+                emailLabels = [];
+            }
+        }
+
+        if (!emailLabels.includes(label)) {
+            emailLabels.push(label);
+        }
+
+        await executeNonQuery(
+            'UPDATE nt_user_emails SET labels = @labels WHERE gmail_id = @gmailId AND cuserid = @cuserid',
+            { labels: JSON.stringify(emailLabels), gmailId: id, cuserid: user.cuserid }
+        );
+
+        clearEmailCache(user.cuserid);
+
+        res.json({
+            success: true,
+            message: 'Label added'
+        });
+    } catch (error) {
+        console.error('Error adding label:', error);
+        res.status(500).json({
+            success: false,
+            message: 'Failed to add label'
+        });
+    }
+};
+
+export const removeGmailLabel = async (req: AuthRequest, res: Response) => {
+    try {
+        const user = await getUserFromToken(req);
+        const { id, labelId } = req.params;
+
+        const tokens = await getGmailTokens(user.cuserid);
+        if (!tokens) {
+            return res.status(400).json({
+                success: false,
+                message: 'Please connect your Gmail account first'
+            });
+        }
+
+        gmailService.setUserCredentials(tokens);
+        await gmailService.removeLabel(id, labelId);
+
+        const email = await executeQuery<any>(
+            'SELECT labels FROM nt_user_emails WHERE gmail_id = @gmailId AND cuserid = @cuserid',
+            { gmailId: id, cuserid: user.cuserid }
+        );
+
+        let emailLabels = [];
+        if (email && email.length > 0 && email[0].labels) {
+            try {
+                emailLabels = JSON.parse(email[0].labels);
+            } catch (e) {
+                emailLabels = [];
+            }
+        }
+
+        const labels = await gmailService.getLabels();
+        const label = labels.find((l: any) => l.id === labelId);
+        const labelName = label?.name;
+
+        if (labelName) {
+            emailLabels = emailLabels.filter((l: string) => l !== labelName);
+        }
+
+        await executeNonQuery(
+            'UPDATE nt_user_emails SET labels = @labels WHERE gmail_id = @gmailId AND cuserid = @cuserid',
+            { labels: JSON.stringify(emailLabels), gmailId: id, cuserid: user.cuserid }
+        );
+
+        clearEmailCache(user.cuserid);
+
+        res.json({
+            success: true,
+            message: 'Label removed'
+        });
+    } catch (error) {
+        console.error('Error removing label:', error);
+        res.status(500).json({
+            success: false,
+            message: 'Failed to remove label'
+        });
+    }
+};
 
 export const downloadGmailAttachment = async (req: AuthRequest, res: Response) => {
     try {
@@ -1322,17 +1678,14 @@ export const downloadGmailAttachment = async (req: AuthRequest, res: Response) =
     }
 };
 
-// ==============================================
-// BULK OPERATIONS
-// ==============================================
-
 export const bulkDeleteEmails = async (req: AuthRequest, res: Response) => {
     try {
         const user = await getUserFromToken(req);
         const { emailIds } = req.body;
 
         if (emailIds && emailIds.length > 0) {
-            const placeholders = emailIds.map(() => '?').join(',');
+            // Build dynamic query
+            const placeholders = emailIds.map((_: any, i: number) => `@id${i}`).join(',');
             const query = `DELETE FROM nt_user_emails WHERE gmail_id IN (${placeholders}) AND cuserid = @cuserid`;
 
             const params: any = { cuserid: user.cuserid };
@@ -1343,7 +1696,6 @@ export const bulkDeleteEmails = async (req: AuthRequest, res: Response) => {
             await executeNonQuery(query, params);
         }
 
-        // Clear cache after bulk action
         clearEmailCache(user.cuserid);
 
         res.json({
@@ -1365,7 +1717,7 @@ export const bulkMoveToTrash = async (req: AuthRequest, res: Response) => {
         const { emailIds } = req.body;
 
         if (emailIds && emailIds.length > 0) {
-            const placeholders = emailIds.map(() => '?').join(',');
+            const placeholders = emailIds.map((_: any, i: number) => `@id${i}`).join(',');
             const query = `UPDATE nt_user_emails SET folder = 'trash' 
                            WHERE gmail_id IN (${placeholders}) AND cuserid = @cuserid`;
 
@@ -1377,7 +1729,6 @@ export const bulkMoveToTrash = async (req: AuthRequest, res: Response) => {
             await executeNonQuery(query, params);
         }
 
-        // Clear cache after bulk action
         clearEmailCache(user.cuserid);
 
         res.json({
@@ -1399,7 +1750,7 @@ export const bulkMarkAsRead = async (req: AuthRequest, res: Response) => {
         const { emailIds } = req.body;
 
         if (emailIds && emailIds.length > 0) {
-            const placeholders = emailIds.map(() => '?').join(',');
+            const placeholders = emailIds.map((_: any, i: number) => `@id${i}`).join(',');
             const query = `UPDATE nt_user_emails SET is_read = 1 
                            WHERE gmail_id IN (${placeholders}) AND cuserid = @cuserid`;
 
@@ -1411,7 +1762,6 @@ export const bulkMarkAsRead = async (req: AuthRequest, res: Response) => {
             await executeNonQuery(query, params);
         }
 
-        // Clear cache after bulk action
         clearEmailCache(user.cuserid);
 
         res.json({
@@ -1433,7 +1783,7 @@ export const bulkMarkAsUnread = async (req: AuthRequest, res: Response) => {
         const { emailIds } = req.body;
 
         if (emailIds && emailIds.length > 0) {
-            const placeholders = emailIds.map(() => '?').join(',');
+            const placeholders = emailIds.map((_: any, i: number) => `@id${i}`).join(',');
             const query = `UPDATE nt_user_emails SET is_read = 0 
                            WHERE gmail_id IN (${placeholders}) AND cuserid = @cuserid`;
 
@@ -1445,7 +1795,6 @@ export const bulkMarkAsUnread = async (req: AuthRequest, res: Response) => {
             await executeNonQuery(query, params);
         }
 
-        // Clear cache after bulk action
         clearEmailCache(user.cuserid);
 
         res.json({
@@ -1457,6 +1806,30 @@ export const bulkMarkAsUnread = async (req: AuthRequest, res: Response) => {
         res.status(500).json({
             success: false,
             message: 'Failed to mark emails as unread'
+        });
+    }
+};
+
+export const clearEmailCacheDev = async (req: AuthRequest, res: Response) => {
+    try {
+        const user = await getUserFromToken(req);
+
+        clearEmailCache(user.cuserid);
+
+        await executeNonQuery(
+            'DELETE FROM nt_user_emails WHERE cuserid = @cuserid',
+            { cuserid: user.cuserid }
+        );
+
+        res.json({
+            success: true,
+            message: 'Cache cleared successfully'
+        });
+    } catch (error) {
+        console.error('Error clearing cache:', error);
+        res.status(500).json({
+            success: false,
+            message: 'Failed to clear cache'
         });
     }
 };
