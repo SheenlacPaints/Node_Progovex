@@ -1,23 +1,26 @@
 // src/config/s3.config.ts
-import { S3Client } from "@aws-sdk/client-s3";
+
+import AWS from 'aws-sdk';
 import dotenv from 'dotenv';
 
 dotenv.config();
 
-// S3 Client Configuration
-export const s3Client = new S3Client({
+// Configure AWS SDK v2
+AWS.config.update({
     region: process.env.AWS_REGION || 'ap-south-1',
-    credentials: {
-        accessKeyId: process.env.AWS_ACCESS_KEY_ID || '',
-        secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY || '',
-    },
+    accessKeyId: process.env.AWS_ACCESS_KEY_ID || '',
+    secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY || '',
+    signatureVersion: 'v4',
 });
 
+// S3 Client instance (v2)
+export const s3Client = new AWS.S3();
+
 export const S3_CONFIG = {
-    bucketName: process.env.S3_BUCKET_NAME || 'your-bucket-name',
+    bucketName: process.env.S3_BUCKET_NAME || 'progovex-post',
     region: process.env.AWS_REGION || 'ap-south-1',
-    accessKeyId: process.env.AWS_ACCESS_KEY_ID!,
-    secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY!,
+    accessKeyId: process.env.AWS_ACCESS_KEY_ID || '',
+    secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY || '',
     baseFolder: process.env.S3_BASE_FOLDER || 'uploads',
     maxFileSize: 50 * 1024 * 1024, // 50MB
     allowedMimeTypes: [
@@ -32,3 +35,18 @@ export const S3_CONFIG = {
         'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
     ],
 };
+
+// For backward compatibility - create a client instance
+export const s3ClientV2 = s3Client;
+
+// Helper function to get signed URL
+export const getSignedUrl = (operation: string, params: any, expiresIn: number = 3600): string => {
+    return s3Client.getSignedUrl(operation, {
+        ...params,
+        Expires: expiresIn,
+    });
+};
+
+// Export types for v2
+export type S3ClientType = AWS.S3;
+export type S3ConfigType = typeof S3_CONFIG;

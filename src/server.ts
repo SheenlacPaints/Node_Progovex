@@ -1,4 +1,6 @@
 // backend/src/server.ts
+import './polyfills/crypto-polyfill';
+
 import dotenv from 'dotenv';
 dotenv.config();
 import express, { Request, Response, NextFunction } from 'express';
