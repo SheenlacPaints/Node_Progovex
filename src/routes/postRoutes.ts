@@ -68,7 +68,7 @@ router.post('/:id/save', authenticateToken, savePost);
 router.delete('/:id/save', authenticateToken, unsavePost);
 
 // Report post
-router.post('/:id/report', authenticateToken, reportPost);
+router.post('/:id/report', decryptRequest, authenticateToken, reportPost);
 router.post('/:id/poll/vote', authenticateToken, votePoll);
 router.get('/:id/poll/user-vote', authenticateToken, getUserPollVote);
 

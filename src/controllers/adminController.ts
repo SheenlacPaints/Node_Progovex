@@ -35,14 +35,16 @@ export const getPendingPosts = async (req: AuthRequest, res: Response) => {
 
     const query = `
       SELECT 
-        p.*, 
+        p.*,
+        FORMAT(p.created_at, 'yyyy-MM-dd HH:mm:ss') as created_at,
         u.cuser_name as username, 
         u.cuser_name as full_name, 
         u.cemail 
       FROM nt_posts p
       JOIN users u ON p.cuserid = u.cuserid
-      WHERE p.approval_status = 'waiting' AND p.status = 'pending'
-      ORDER BY p.created_at ASC
+      --WHERE p.approval_status = 'waiting' AND p.status = 'pending'
+      --WHERE p.approval_status <> 'approved' AND p.status <> 'approved'
+      ORDER BY p.created_at DESC
       OFFSET @offset ROWS
       FETCH NEXT @limit ROWS ONLY
     `;
@@ -51,6 +53,9 @@ export const getPendingPosts = async (req: AuthRequest, res: Response) => {
 
     // Process each post to convert media URLs
     const processedPosts = posts.map(post => {
+      if(post.created_at.length){
+        post.created_at = post.created_at[1]
+      }
       if (post.media_urls) {
         try {
           const mediaUrls = JSON.parse(post.media_urls);
@@ -222,6 +227,7 @@ export const getAllPostsForAdmin = async (req: AuthRequest, res: Response) => {
 
 export const approvePost = async (req: AuthRequest, res: Response) => {
   try {
+    console.log("2222222222222222222222222222222222");
     const { id } = req.params;
     const adminId = req.user!.id;
 
@@ -484,6 +490,7 @@ export const bulkRejectPosts = async (req: AuthRequest, res: Response) => {
 };
 
 export const getAllUsers = async (req: AuthRequest, res: Response) => {
+  console.log("111111111111111111111111111111111");
   const page = parseInt(req.query.page as string) || 1;
   const limit = parseInt(req.query.limit as string) || 20;
   const offset = (page - 1) * limit;
@@ -673,17 +680,19 @@ export const getActivityLogs = async (req: AuthRequest, res: Response) => {
 export const getReportedPosts = async (req: AuthRequest, res: Response) => {
   const reports = await executeQuery<any>(
     `SELECT 
-      r.*, 
-      p.content, 
-      p.cuserid as post_owner_id, 
-      u.cuser_name as reporter_username, 
-      u2.cuser_name as post_owner_username
-     FROM nt_reports r
-     JOIN nt_posts p ON r.post_id = p.id
-     JOIN users u ON r.cuserid = u.id
-     JOIN users u2 ON p.cuserid = u2.id
-     WHERE r.resolved = 0
-     ORDER BY r.created_at DESC`
+    r.*, 
+    p.content, 
+    p.cuserid AS post_owner_id,
+    p.media_urls,
+    p.poll_data,
+    u.cuser_name AS reporter_username,
+    u2.cuser_name AS post_owner_username
+FROM nt_reports r
+JOIN nt_posts p ON r.post_id = p.id
+JOIN users u ON r.cuserid = u.cuserid
+JOIN users u2 ON p.cuserid = u2.cuserid
+WHERE r.resolved = 0
+ORDER BY r.created_at DESC`
   );
 
   res.json({ success: true, reports: reports });
@@ -843,4 +852,93 @@ export const getSystemHealth = async (req: AuthRequest, res: Response) => {
     },
     timestamp: new Date()
   });
+};
+
+export const approveReportPost = async (req: AuthRequest, res: Response) => {
+  try {
+    console.log("2222222222222222222222222222222222");
+    const { id } = req.params;
+    const adminId = req.user!.id;
+
+    console.log('Approving post:', { postId: id, adminId });
+
+    // Update post with approval status and set approved_at to GETDATE()
+    const result = await executeNonQuery(
+      `UPDATE nt_posts 
+       SET 
+           approved_by = @adminId, 
+           approved_at = GETDATE(),
+           report_flg = 'approved'
+       WHERE id = @postId AND report_flg = 'report'`,
+      { adminId, postId: parseInt(id) }
+    );
+
+    const result1 = await executeNonQuery(
+      `UPDATE nt_reports 
+       SET 
+           resolved = 1, 
+           resolved_at = GETDATE(),
+           resolved_by = @adminId
+       WHERE post_id = @postId`,
+      { adminId, postId: parseInt(id) }
+    );
+
+    if (result.rowsAffected && result.rowsAffected[0] === 0) {
+      return res.status(404).json({
+        success: false,
+        message: 'Post not found or already processed'
+      });
+    }
+
+    res.json({
+      success: true,
+      message: 'Post approved successfully',
+    });
+  } catch (error) {
+    console.error('Error approving post:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to approve post',
+      error: error.message
+    });
+  }
+};
+
+export const removeReportPost = async (req: AuthRequest, res: Response) => {
+  try {
+    console.log("Removing report from post");
+    const { id } = req.params;
+    const adminId = req.user!.id;
+
+    console.log('Removing report from post:', { postId: id, adminId });
+
+    const result = await executeNonQuery(
+      `UPDATE nt_posts 
+       SET 
+            approved_by = @adminId, 
+           approved_at = GETDATE(),
+           report_flg = 'blocked'
+       WHERE id = @postId AND report_flg = 'report'`,
+      { adminId, postId: parseInt(id) }
+    );
+
+    if (result.rowsAffected && result.rowsAffected[0] === 0) {
+      return res.status(404).json({
+        success: false,
+        message: 'Post not found or already processed'
+      });
+    }
+
+    res.json({
+      success: true,
+      message: 'Report removed successfully',
+    });
+  } catch (error) {
+    console.error('Error removing report from post:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to remove report from post',
+      error: error.message
+    });
+  }
 };

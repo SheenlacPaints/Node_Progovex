@@ -377,7 +377,7 @@ export const getMe = async (req: AuthRequest, res: Response, next: NextFunction)
                 username, 
                 cemail, 
                 full_name, 
-                avatar_url, 
+                cprofile_image_name as avatar_url, 
                 bio, 
                 role, 
                 is_active, 
@@ -479,7 +479,7 @@ export const updateProfile = async (req: AuthRequest, res: Response, next: NextF
             `UPDATE users 
              SET full_name = @fullName, 
                  bio = @bio, 
-                 avatar_url = @avatarUrl 
+                 cprofile_image_name = @avatarUrl 
              WHERE id = @userId`,
             { fullName, bio, avatarUrl, userId }
         );
@@ -490,7 +490,7 @@ export const updateProfile = async (req: AuthRequest, res: Response, next: NextF
 
         // Get updated user
         const users = await executeQuery<any>(
-            `SELECT id, username, cemail, full_name, avatar_url, bio, role 
+            `SELECT id, username, cemail, full_name, cprofile_image_name as avatar_url, bio, role 
              FROM users 
              WHERE id = @userId`,
             { userId }
