@@ -415,6 +415,7 @@ export const getPosts = async (req: AuthRequest, res: Response) => {
         const query = `
             SELECT p.*,
                 FORMAT(p.created_at, 'yyyy-MM-dd HH:mm:ss') as created_at,
+                FORMAT(p.approved_at, 'yyyy-MM-dd HH:mm:ss') as approved_at,
                 u.cuser_name as username,
                 u.cuser_name as full_name,
                 u.cprofile_image_name as avatar_url,
@@ -458,7 +459,8 @@ export const getPosts = async (req: AuthRequest, res: Response) => {
         // Process posts with media (convert to proxy URLs)
         const postsWithMedia = posts.map(post => {
             if(post.created_at.length){
-                post.created_at = post.created_at[1]
+                post.created_at = post.created_at[1];
+                post.approved_at = post.approved_at[1];
             }
             // Parse and convert media URLs
             let mediaUrls = [];
@@ -596,7 +598,7 @@ export const getPost = async (req: AuthRequest, res: Response) => {
                 p.*, 
                 u.cuser_name as username, 
                 u.cuser_name as full_name, 
-                u.avatar_url,
+                u.cprofile_image_name as avatar_url,
                 (SELECT COUNT(*) FROM nt_reactions WHERE post_id = p.id AND cuserid = @userId) as user_liked
             FROM nt_posts p
             JOIN users u ON p.cuserid = u.id
@@ -663,11 +665,16 @@ export const deletePost = async (req: AuthRequest, res: Response) => {
     const userId = req.user!.id;
     const userRole = req.user!.role;
 
-    let query = 'DELETE FROM nt_posts WHERE id = @postId AND cuserid = @userId';
+    console.log(userRole,"userRole");
+    console.log(userId,"userId");
+    console.log(id,"id");
+    //let query = 'DELETE FROM nt_posts WHERE id = @postId AND cuserid = @userId';
+    let query = "UPDATE nt_posts SET status = 'deleted' WHERE id = @postId AND cuserid = @userId";
     let params: any = { postId: parseInt(id), userId };
-
+    console.log(query,"query");
     if (userRole === 'admin') {
-        query = 'DELETE FROM nt_posts WHERE id = @postId';
+        // query = 'DELETE FROM nt_posts WHERE id = @postId';
+        query = "UPDATE nt_posts SET status = 'deleted' WHERE id = @postId";
         params = { postId: parseInt(id) };
     }
 
@@ -1060,13 +1067,28 @@ export const removeReaction = async (req: AuthRequest, res: Response) => {
 export const getReactions = async (req: AuthRequest, res: Response) => {
     const { id } = req.params;
 
+    // const reactions = await executeQuery<any>(
+    //     `SELECT r.type, COUNT(*) as count 
+    //      FROM nt_reactions r
+    //      WHERE r.post_id = @postId
+    //      GROUP BY r.type`,
+    //     { postId: parseInt(id) }
+    // );
+
     const reactions = await executeQuery<any>(
-        `SELECT r.type, COUNT(*) as count 
-         FROM nt_reactions r
-         WHERE r.post_id = @postId
-         GROUP BY r.type`,
+        `SELECT a.type, b.cfirst_name, COUNT(*) AS Count
+        FROM nt_reactions a
+        JOIN users b
+            ON a.cuserid = b.cuserid
+        WHERE a.post_id = @postId
+        GROUP BY
+            a.type,
+            b.cfirst_name;`,
         { postId: parseInt(id) }
     );
+
+    console.log("1111111111111111111111111111");
+    console.log(reactions)
 
     res.json({ success: true, reactions });
 };
@@ -1249,6 +1271,15 @@ export const reportPost = async (req: AuthRequest, res: Response) => {
     await executeNonQuery(
         'INSERT INTO nt_reports (post_id, cuserid, reason, description) VALUES (@postId, @userId, @reason, @description)',
         { postId: parseInt(id), userId, reason, description }
+    );
+
+    await executeNonQuery(
+        'INSERT INTO nt_reports (post_id, cuserid, reason, description) VALUES (@postId, @userId, @reason, @description)',
+        { postId: parseInt(id), userId, reason, description }
+    );
+    await executeNonQuery(
+        "UPDATE nt_posts SET report_flg = 'report' WHERE id = @postId",
+        { postId: parseInt(id) }
     );
 
     res.json({ success: true, message: 'Post reported' });

@@ -15,6 +15,8 @@ import {
   getActivityLogs,
   getReportedPosts,
   resolveReport,
+  approveReportPost,
+  removeReportPost,
   getAnalytics,
   sendAnnouncement,
   getModerationQueue,
@@ -46,6 +48,9 @@ router.post('/posts/bulk-reject', authorizeAdmin, bulkRejectPosts);
 router.get('/posts/reported', getReportedPosts);
 router.post('/reports/:id/resolve', resolveReport);
 router.get('/moderation/queue', getModerationQueue);
+
+router.post('/reports/:id/approve', authorizeAdmin, approveReportPost);
+router.post('/reports/:id/remove', authorizeAdmin, removeReportPost);
 
 // User management (admin only)
 router.get('/users', authorizeAdmin, getAllUsers);

@@ -15,14 +15,14 @@ export const getUserProfile = async (req: AuthRequest, res: Response) => {
 
     if (username) {
         query = `
-            SELECT id, username, full_name, avatar_url, bio, created_at 
+            SELECT id, username, full_name, cprofile_image_name as avatar_url, bio, created_at 
             FROM users 
             WHERE username = @username
         `;
         params = { username };
     } else {
         query = `
-            SELECT id, username, full_name, avatar_url, bio, created_at 
+            SELECT id, username, full_name, cprofile_image_name as avatar_url, bio, created_at 
             FROM users 
             WHERE id = @userId
         `;
@@ -94,7 +94,7 @@ export const updateAvatar = async (req: AuthRequest, res: Response) => {
         const userId = req.user!.id;
 
         await executeNonQuery(
-            'UPDATE users SET avatar_url = @avatarUrl WHERE id = @userId',
+            'UPDATE users SET cprofile_image_name = @avatarUrl WHERE id = @userId',
             { avatarUrl, userId }
         );
 
@@ -178,7 +178,7 @@ export const getFollowers = async (req: AuthRequest, res: Response) => {
     const offset = (page - 1) * limit;
 
     const followers = await executeQuery<any>(
-        `SELECT u.id, u.username, u.full_name, u.avatar_url 
+        `SELECT u.id, u.username, u.full_name, u.cprofile_image_name as avatar_url 
          FROM nt_follows f 
          JOIN users u ON f.follower_id = u.id 
          WHERE f.following_id = @userId 
@@ -197,7 +197,7 @@ export const getFollowing = async (req: AuthRequest, res: Response) => {
     const offset = (page - 1) * limit;
 
     const following = await executeQuery<any>(
-        `SELECT u.id, u.username, u.full_name, u.avatar_url 
+        `SELECT u.id, u.username, u.full_name, u.cprofile_image_name as avatar_url 
          FROM nt_follows f 
          JOIN users u ON f.following_id = u.id 
          WHERE f.follower_id = @userId 
@@ -239,7 +239,7 @@ export const searchUsers = async (req: AuthRequest, res: Response) => {
     }
 
     const users = await executeQuery<any>(
-        `SELECT id, username, full_name, avatar_url 
+        `SELECT id, username, full_name, cprofile_image_name as avatar_url 
          FROM users 
          WHERE username LIKE @searchTerm OR full_name LIKE @searchTerm
          ORDER BY username
@@ -300,7 +300,7 @@ export const getNotifications = async (req: AuthRequest, res: Response) => {
             let fromUser = null;
             if (notif.from_user_id) {
                 const userResult = await executeQuery<any>(
-                    'SELECT username, full_name, avatar_url FROM users WHERE id = @userId',
+                    'SELECT username, full_name, cprofile_image_name as avatar_url FROM users WHERE id = @userId',
                     { userId: notif.from_user_id }
                 );
                 const userData = userResult[0];
@@ -562,7 +562,7 @@ export const getTopUsers = async (req: AuthRequest, res: Response) => {
                 u.id, 
                 u.username, 
                 u.full_name, 
-                u.avatar_url,
+                u.cprofile_image_name as avatar_url,
                 COUNT(DISTINCT p.id) as post_count,
                 COUNT(DISTINCT r.id) as total_likes,
                 COUNT(DISTINCT f.follower_id) as follower_count
@@ -570,7 +570,7 @@ export const getTopUsers = async (req: AuthRequest, res: Response) => {
              LEFT JOIN nt_posts p ON u.id = p.cuserid AND p.status = 'approved'
              LEFT JOIN nt_reactions r ON p.id = r.post_id
              LEFT JOIN nt_follows f ON u.id = f.following_id
-             GROUP BY u.id, u.username, u.full_name, u.avatar_url
+             GROUP BY u.id, u.username, u.full_name, u.cprofile_image_name
              ORDER BY post_count DESC, total_likes DESC`
         );
 
@@ -594,7 +594,7 @@ export const getSuggestedUsers = async (req: AuthRequest, res: Response) => {
                 u.id, 
                 u.username, 
                 u.full_name, 
-                u.avatar_url,
+                u.cprofile_image_name as avatar_url,
                 (SELECT COUNT(*) FROM nt_follows WHERE following_id = u.id) as follower_count
              FROM users u
              WHERE u.id != @userId

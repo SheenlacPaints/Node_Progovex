@@ -1,24 +1,10 @@
 // src/helpers/s3.helper.ts
-import {
-    S3Client,
-    PutObjectCommand,
-    GetObjectCommand,
-    DeleteObjectCommand,
-    ListObjectsV2Command,
-    HeadObjectCommand,
-    CopyObjectCommand,
-    DeleteObjectsCommand,
-    PutObjectCommandInput,
-    GetObjectCommandInput,
-    DeleteObjectCommandInput,
-    ListObjectsV2CommandInput,
-    CopyObjectCommandInput,
-} from "@aws-sdk/client-s3";
-import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
-import { s3Client, S3_CONFIG } from "../config/s3.config";
+
+import AWS from 'aws-sdk';
 import { v4 as uuidv4 } from 'uuid';
 import path from 'path';
 import { Readable } from 'stream';
+import { s3Client, S3_CONFIG } from '../config/s3.config';
 
 export interface FileUploadOptions {
     folderPath?: string;
@@ -49,7 +35,7 @@ export interface FileInfo {
 }
 
 export class S3Helper {
-    public client: S3Client;
+    public client: AWS.S3;
     public bucketName: string;
     private region: string;
     private baseUrl: string;
@@ -58,23 +44,9 @@ export class S3Helper {
         this.client = s3Client;
         this.region = S3_CONFIG.region || 'ap-south-1';
         this.bucketName = S3_CONFIG.bucketName || 'progovex-post';
-
-        this.client = new S3Client({
-            region: this.region,
-            credentials: {
-                accessKeyId: process.env.AWS_ACCESS_KEY_ID!,
-                secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY!,
-            },
-        });
-
         this.baseUrl = `https://${this.bucketName}.s3.${this.region}.amazonaws.com`;
     }
 
-    // ==============================================
-    // FOLDER OPERATIONS
-    // ==============================================
-
-    // Make these properties accessible
     getBucketName(): string {
         return this.bucketName;
     }
@@ -83,7 +55,7 @@ export class S3Helper {
         return this.region;
     }
 
-    getClient(): S3Client {
+    getClient(): AWS.S3 {
         return this.client;
     }
 
@@ -94,7 +66,7 @@ export class S3Helper {
         try {
             const key = this.normalizePath(folderPath, true);
 
-            const command = new PutObjectCommand({
+            const params: AWS.S3.PutObjectRequest = {
                 Bucket: this.bucketName,
                 Key: key,
                 Body: '',
@@ -104,9 +76,9 @@ export class S3Helper {
                     'created-at': new Date().toISOString(),
                     ...metadata,
                 },
-            });
+            };
 
-            await this.client.send(command);
+            await this.client.putObject(params).promise();
             console.log(`📁 Folder created: ${key}`);
             return key;
         } catch (error: any) {
@@ -125,13 +97,13 @@ export class S3Helper {
             let continuationToken: string | undefined;
 
             do {
-                const listCommand = new ListObjectsV2Command({
+                const listParams: AWS.S3.ListObjectsV2Request = {
                     Bucket: this.bucketName,
                     Prefix: prefix,
                     ContinuationToken: continuationToken,
-                });
+                };
 
-                const listResponse = await this.client.send(listCommand);
+                const listResponse = await this.client.listObjectsV2(listParams).promise();
 
                 if (!listResponse.Contents || listResponse.Contents.length === 0) {
                     break;
@@ -142,15 +114,15 @@ export class S3Helper {
                     .map(item => ({ Key: item.Key! }));
 
                 if (objectsToDelete.length > 0) {
-                    const deleteCommand = new DeleteObjectsCommand({
+                    const deleteParams: AWS.S3.DeleteObjectsRequest = {
                         Bucket: this.bucketName,
                         Delete: {
                             Objects: objectsToDelete,
                             Quiet: false,
                         },
-                    });
+                    };
 
-                    await this.client.send(deleteCommand);
+                    await this.client.deleteObjects(deleteParams).promise();
                     deletedCount += objectsToDelete.length;
                 }
 
@@ -172,13 +144,13 @@ export class S3Helper {
         try {
             const prefix = this.normalizePath(folderPath, true);
 
-            const listCommand = new ListObjectsV2Command({
+            const listParams: AWS.S3.ListObjectsV2Request = {
                 Bucket: this.bucketName,
                 Prefix: prefix,
                 Delimiter: recursive ? undefined : '/',
-            });
+            };
 
-            const response = await this.client.send(listCommand);
+            const response = await this.client.listObjectsV2(listParams).promise();
             const contents: FileInfo[] = [];
 
             // Process files
@@ -197,7 +169,7 @@ export class S3Helper {
                 }
             }
 
-            // Process subfolders (from CommonPrefixes)
+            // Process subfolders
             if (response.CommonPrefixes) {
                 for (const prefixItem of response.CommonPrefixes) {
                     if (prefixItem.Prefix) {
@@ -220,85 +192,8 @@ export class S3Helper {
     }
 
     /**
-     * Check if a folder exists
-     */
-    async folderExists(folderPath: string): Promise<boolean> {
-        try {
-            const prefix = this.normalizePath(folderPath, true);
-            const listCommand = new ListObjectsV2Command({
-                Bucket: this.bucketName,
-                Prefix: prefix,
-                MaxKeys: 1,
-            });
-
-            const response = await this.client.send(listCommand);
-            return (response.Contents && response.Contents.length > 0) || false;
-        } catch (error) {
-            return false;
-        }
-    }
-
-    /**
-     * Move/Rename a folder
-     */
-    async moveFolder(sourcePath: string, destinationPath: string): Promise<number> {
-        try {
-            const sourcePrefix = this.normalizePath(sourcePath, true);
-            const destPrefix = this.normalizePath(destinationPath, true);
-
-            // List all objects in source folder
-            const listCommand = new ListObjectsV2Command({
-                Bucket: this.bucketName,
-                Prefix: sourcePrefix,
-            });
-
-            const listResponse = await this.client.send(listCommand);
-
-            if (!listResponse.Contents || listResponse.Contents.length === 0) {
-                return 0;
-            }
-
-            let movedCount = 0;
-
-            for (const item of listResponse.Contents) {
-                if (!item.Key) continue;
-
-                // Calculate new key
-                const relativePath = item.Key.substring(sourcePrefix.length);
-                const newKey = destPrefix + relativePath;
-
-                // Copy to new location
-                await this.client.send(new CopyObjectCommand({
-                    Bucket: this.bucketName,
-                    CopySource: `${this.bucketName}/${item.Key}`,
-                    Key: newKey,
-                }));
-
-                // Delete from old location
-                await this.client.send(new DeleteObjectCommand({
-                    Bucket: this.bucketName,
-                    Key: item.Key,
-                }));
-
-                movedCount++;
-            }
-
-            console.log(`📂 Folder moved: ${sourcePrefix} -> ${destPrefix} (${movedCount} objects)`);
-            return movedCount;
-        } catch (error: any) {
-            console.error('Error moving folder:', error);
-            throw new Error(`Failed to move folder: ${error.message}`);
-        }
-    }
-
-    // ==============================================
-    // FILE OPERATIONS
-    // ==============================================
-
-    /**
      * Upload a file to S3
      */
-    // In your s3.helper.ts - ensure uploads are private by default
     async uploadFile(
         file: Buffer | Readable | string,
         options: FileUploadOptions = {}
@@ -309,13 +204,13 @@ export class S3Helper {
                 fileName,
                 contentType = 'application/octet-stream',
                 metadata = {},
-                isPublic = false, // Default to private
+                isPublic = false,
             } = options;
 
             const finalFileName = fileName || `${uuidv4()}`;
             const key = this.normalizePath(folderPath, true) + finalFileName;
 
-            const uploadParams: PutObjectCommandInput = {
+            const uploadParams: AWS.S3.PutObjectRequest = {
                 Bucket: this.bucketName,
                 Key: key,
                 Body: file,
@@ -326,26 +221,23 @@ export class S3Helper {
                 },
             };
 
-            // ⚠️ DON'T set ACL for private - this is the default
-            // Only set ACL if explicitly requested
             if (isPublic) {
                 uploadParams.ACL = 'public-read';
             }
 
-            const command = new PutObjectCommand(uploadParams);
-            const response = await this.client.send(command);
+            const result = await this.client.upload(uploadParams).promise();
 
-            const result: FileUploadResult = {
+            const uploadResult: FileUploadResult = {
                 key: key,
-                url: this.getFileUrl(key),
+                url: result.Location || this.getFileUrl(key),
                 bucket: this.bucketName,
                 region: this.region,
                 contentType: contentType,
                 metadata: metadata,
             };
 
-            console.log(`✅ File uploaded privately: ${key}`);
-            return result;
+            console.log(`✅ File uploaded: ${key}`);
+            return uploadResult;
         } catch (error: any) {
             console.error('Error uploading file:', error);
             throw new Error(`Failed to upload file: ${error.message}`);
@@ -376,25 +268,17 @@ export class S3Helper {
     }
 
     /**
-     * Download/Get a file from S3
+     * Get a file from S3
      */
     async getFile(key: string): Promise<Buffer> {
         try {
-            const command = new GetObjectCommand({
+            const params: AWS.S3.GetObjectRequest = {
                 Bucket: this.bucketName,
                 Key: key,
-            });
+            };
 
-            const response = await this.client.send(command);
-
-            // Convert stream to buffer
-            const chunks: Uint8Array[] = [];
-            for await (const chunk of response.Body as any) {
-                chunks.push(chunk);
-            }
-
-            console.log(`📥 File downloaded: ${key}`);
-            return Buffer.concat(chunks);
+            const response = await this.client.getObject(params).promise();
+            return response.Body as Buffer;
         } catch (error: any) {
             console.error('Error getting file:', error);
             throw new Error(`Failed to get file: ${error.message}`);
@@ -402,17 +286,16 @@ export class S3Helper {
     }
 
     /**
-     * Get file as stream (for large files)
+     * Get file as stream
      */
     async getFileStream(key: string): Promise<Readable> {
         try {
-            const command = new GetObjectCommand({
+            const params: AWS.S3.GetObjectRequest = {
                 Bucket: this.bucketName,
                 Key: key,
-            });
+            };
 
-            const response = await this.client.send(command);
-            console.log(`📥 File stream created: ${key}`);
+            const response = await this.client.getObject(params).promise();
             return response.Body as Readable;
         } catch (error: any) {
             console.error('Error getting file stream:', error);
@@ -421,16 +304,16 @@ export class S3Helper {
     }
 
     /**
-     * Delete a file from S3
+     * Delete a file
      */
     async deleteFile(key: string): Promise<boolean> {
         try {
-            const command = new DeleteObjectCommand({
+            const params: AWS.S3.DeleteObjectRequest = {
                 Bucket: this.bucketName,
                 Key: key,
-            });
+            };
 
-            await this.client.send(command);
+            await this.client.deleteObject(params).promise();
             console.log(`🗑️ File deleted: ${key}`);
             return true;
         } catch (error: any) {
@@ -446,18 +329,17 @@ export class S3Helper {
         try {
             if (keys.length === 0) return 0;
 
-            // S3 can delete up to 1000 objects at once
             const objects = keys.map(key => ({ Key: key }));
 
-            const command = new DeleteObjectsCommand({
+            const params: AWS.S3.DeleteObjectsRequest = {
                 Bucket: this.bucketName,
                 Delete: {
                     Objects: objects,
                     Quiet: false,
                 },
-            });
+            };
 
-            const response = await this.client.send(command);
+            const response = await this.client.deleteObjects(params).promise();
             const deletedCount = response.Deleted?.length || 0;
 
             console.log(`🗑️ Deleted ${deletedCount} files`);
@@ -473,12 +355,12 @@ export class S3Helper {
      */
     async fileExists(key: string): Promise<boolean> {
         try {
-            const command = new HeadObjectCommand({
+            const params: AWS.S3.HeadObjectRequest = {
                 Bucket: this.bucketName,
                 Key: key,
-            });
+            };
 
-            await this.client.send(command);
+            await this.client.headObject(params).promise();
             return true;
         } catch (error) {
             return false;
@@ -490,12 +372,12 @@ export class S3Helper {
      */
     async getFileInfo(key: string): Promise<FileInfo> {
         try {
-            const command = new HeadObjectCommand({
+            const params: AWS.S3.HeadObjectRequest = {
                 Bucket: this.bucketName,
                 Key: key,
-            });
+            };
 
-            const response = await this.client.send(command);
+            const response = await this.client.headObject(params).promise();
 
             return {
                 key: key,
@@ -517,13 +399,13 @@ export class S3Helper {
      */
     async copyFile(sourceKey: string, destinationKey: string): Promise<boolean> {
         try {
-            const command = new CopyObjectCommand({
+            const params: AWS.S3.CopyObjectRequest = {
                 Bucket: this.bucketName,
                 CopySource: `${this.bucketName}/${sourceKey}`,
                 Key: destinationKey,
-            });
+            };
 
-            await this.client.send(command);
+            await this.client.copyObject(params).promise();
             console.log(`📄 File copied: ${sourceKey} -> ${destinationKey}`);
             return true;
         } catch (error: any) {
@@ -537,12 +419,8 @@ export class S3Helper {
      */
     async moveFile(sourceKey: string, destinationKey: string): Promise<boolean> {
         try {
-            // Copy to new location
             await this.copyFile(sourceKey, destinationKey);
-
-            // Delete from old location
             await this.deleteFile(sourceKey);
-
             console.log(`📂 File moved: ${sourceKey} -> ${destinationKey}`);
             return true;
         } catch (error: any) {
@@ -550,10 +428,6 @@ export class S3Helper {
             throw new Error(`Failed to move file: ${error.message}`);
         }
     }
-
-    // ==============================================
-    // PRESIGNED URLS
-    // ==============================================
 
     /**
      * Generate a presigned URL for uploading
@@ -564,14 +438,17 @@ export class S3Helper {
         contentType?: string
     ): Promise<string> {
         try {
-            const command = new PutObjectCommand({
+            const params: AWS.S3.PutObjectRequest = {
                 Bucket: this.bucketName,
                 Key: key,
                 ContentType: contentType || 'application/octet-stream',
+            };
+
+            const url = this.client.getSignedUrl('putObject', {
+                ...params,
+                Expires: expiresIn,
             });
 
-            const url = await getSignedUrl(this.client, command, { expiresIn });
-            console.log(`🔗 Presigned upload URL generated: ${key}`);
             return url;
         } catch (error: any) {
             console.error('Error generating presigned URL:', error);
@@ -587,13 +464,16 @@ export class S3Helper {
         expiresIn: number = 3600
     ): Promise<string> {
         try {
-            const command = new GetObjectCommand({
+            const params: AWS.S3.GetObjectRequest = {
                 Bucket: this.bucketName,
                 Key: key,
+            };
+
+            const url = this.client.getSignedUrl('getObject', {
+                ...params,
+                Expires: expiresIn,
             });
 
-            const url = await getSignedUrl(this.client, command, { expiresIn });
-            console.log(`🔗 Presigned download URL generated: ${key}`);
             return url;
         } catch (error: any) {
             console.error('Error generating presigned URL:', error);
@@ -601,22 +481,18 @@ export class S3Helper {
         }
     }
 
-    // ==============================================
-    // SEARCH OPERATIONS
-    // ==============================================
-
     /**
-     * Search files by prefix or pattern
+     * Search files by prefix
      */
     async searchFiles(prefix: string, maxKeys: number = 1000): Promise<FileInfo[]> {
         try {
-            const command = new ListObjectsV2Command({
+            const params: AWS.S3.ListObjectsV2Request = {
                 Bucket: this.bucketName,
                 Prefix: prefix,
                 MaxKeys: maxKeys,
-            });
+            };
 
-            const response = await this.client.send(command);
+            const response = await this.client.listObjectsV2(params).promise();
 
             const files: FileInfo[] = [];
             if (response.Contents) {
@@ -633,17 +509,12 @@ export class S3Helper {
                 }
             }
 
-            console.log(`🔍 Found ${files.length} files in ${prefix}`);
             return files;
         } catch (error: any) {
             console.error('Error searching files:', error);
             throw new Error(`Failed to search files: ${error.message}`);
         }
     }
-
-    // ==============================================
-    // UTILITY METHODS
-    // ==============================================
 
     /**
      * Get public URL for a file
@@ -653,15 +524,10 @@ export class S3Helper {
     }
 
     /**
-     * Normalize path (remove leading/trailing slashes)
+     * Normalize path
      */
     private normalizePath(pathString: string, isFolder: boolean = false): string {
         let normalized = pathString.replace(/^\/+|\/+$/g, '');
-
-        // Add base folder if configured
-        if (S3_CONFIG.baseFolder && !normalized.startsWith(S3_CONFIG.baseFolder)) {
-            normalized = `${S3_CONFIG.baseFolder}/${normalized}`;
-        }
 
         if (isFolder && !normalized.endsWith('/')) {
             normalized = `${normalized}/`;
@@ -671,27 +537,309 @@ export class S3Helper {
     }
 
     /**
-     * Get file extension from key
+     * Get file extension
      */
     getFileExtension(key: string): string {
         return path.extname(key).toLowerCase();
     }
 
     /**
-     * Get file name from key
+     * Get file name
      */
     getFileName(key: string): string {
         return path.basename(key);
     }
 
     /**
-     * Get file size in human readable format
+     * Get readable file size
      */
     getReadableSize(bytes: number): string {
         const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
         if (bytes === 0) return '0 B';
         const i = Math.floor(Math.log(bytes) / Math.log(1024));
         return `${(bytes / Math.pow(1024, i)).toFixed(2)} ${sizes[i]}`;
+    }
+
+    // src/helpers/s3.helper.ts
+
+    // Add these methods to the S3Helper class after the existing methods
+
+    /**
+     * Move/Rename a folder
+     */
+    async moveFolder(sourcePath: string, destinationPath: string): Promise<number> {
+        try {
+            const sourcePrefix = this.normalizePath(sourcePath, true);
+            const destPrefix = this.normalizePath(destinationPath, true);
+
+            // Check if source folder exists
+            const sourceExists = await this.folderExists(sourcePath);
+            if (!sourceExists) {
+                throw new Error(`Source folder does not exist: ${sourcePath}`);
+            }
+
+            // List all objects in source folder
+            const listParams: AWS.S3.ListObjectsV2Request = {
+                Bucket: this.bucketName,
+                Prefix: sourcePrefix,
+            };
+
+            const listResponse = await this.client.listObjectsV2(listParams).promise();
+
+            if (!listResponse.Contents || listResponse.Contents.length === 0) {
+                return 0;
+            }
+
+            let movedCount = 0;
+
+            for (const item of listResponse.Contents) {
+                if (!item.Key) continue;
+
+                // Calculate new key
+                const relativePath = item.Key.substring(sourcePrefix.length);
+                const newKey = destPrefix + relativePath;
+
+                // Copy to new location
+                const copyParams: AWS.S3.CopyObjectRequest = {
+                    Bucket: this.bucketName,
+                    CopySource: `${this.bucketName}/${item.Key}`,
+                    Key: newKey,
+                };
+
+                await this.client.copyObject(copyParams).promise();
+
+                // Delete from old location
+                const deleteParams: AWS.S3.DeleteObjectRequest = {
+                    Bucket: this.bucketName,
+                    Key: item.Key,
+                };
+
+                await this.client.deleteObject(deleteParams).promise();
+
+                movedCount++;
+            }
+
+            console.log(`📂 Folder moved: ${sourcePrefix} -> ${destPrefix} (${movedCount} objects)`);
+            return movedCount;
+        } catch (error: any) {
+            console.error('Error moving folder:', error);
+            throw new Error(`Failed to move folder: ${error.message}`);
+        }
+    }
+
+    /**
+     * Check if a folder exists
+     */
+    async folderExists(folderPath: string): Promise<boolean> {
+        try {
+            const prefix = this.normalizePath(folderPath, true);
+            const listParams: AWS.S3.ListObjectsV2Request = {
+                Bucket: this.bucketName,
+                Prefix: prefix,
+                MaxKeys: 1,
+            };
+
+            const response = await this.client.listObjectsV2(listParams).promise();
+            return (response.Contents && response.Contents.length > 0) || false;
+        } catch (error) {
+            return false;
+        }
+    }
+
+    /**
+     * Create a folder if it doesn't exist
+     */
+    async ensureFolderExists(folderPath: string): Promise<boolean> {
+        try {
+            const exists = await this.folderExists(folderPath);
+            if (!exists) {
+                await this.createFolder(folderPath);
+                return true;
+            }
+            return false;
+        } catch (error: any) {
+            console.error('Error ensuring folder exists:', error);
+            throw new Error(`Failed to ensure folder exists: ${error.message}`);
+        }
+    }
+
+    /**
+     * Get folder size (total size of all files in folder)
+     */
+    async getFolderSize(folderPath: string): Promise<number> {
+        try {
+            const prefix = this.normalizePath(folderPath, true);
+            let totalSize = 0;
+            let continuationToken: string | undefined;
+
+            do {
+                const listParams: AWS.S3.ListObjectsV2Request = {
+                    Bucket: this.bucketName,
+                    Prefix: prefix,
+                    ContinuationToken: continuationToken,
+                };
+
+                const response = await this.client.listObjectsV2(listParams).promise();
+
+                if (response.Contents) {
+                    for (const item of response.Contents) {
+                        totalSize += item.Size || 0;
+                    }
+                }
+
+                continuationToken = response.NextContinuationToken;
+            } while (continuationToken);
+
+            return totalSize;
+        } catch (error: any) {
+            console.error('Error getting folder size:', error);
+            throw new Error(`Failed to get folder size: ${error.message}`);
+        }
+    }
+
+    /**
+     * Get folder statistics (file count, folder count, total size)
+     */
+    async getFolderStats(folderPath: string): Promise<{
+        fileCount: number;
+        folderCount: number;
+        totalSize: number;
+    }> {
+        try {
+            const prefix = this.normalizePath(folderPath, true);
+            let fileCount = 0;
+            let folderCount = 0;
+            let totalSize = 0;
+            let continuationToken: string | undefined;
+
+            do {
+                const listParams: AWS.S3.ListObjectsV2Request = {
+                    Bucket: this.bucketName,
+                    Prefix: prefix,
+                    Delimiter: '/',
+                    ContinuationToken: continuationToken,
+                };
+
+                const response = await this.client.listObjectsV2(listParams).promise();
+
+                // Count files
+                if (response.Contents) {
+                    for (const item of response.Contents) {
+                        if (item.Key && item.Key !== prefix) {
+                            fileCount++;
+                            totalSize += item.Size || 0;
+                        }
+                    }
+                }
+
+                // Count subfolders
+                if (response.CommonPrefixes) {
+                    folderCount += response.CommonPrefixes.length;
+                }
+
+                continuationToken = response.NextContinuationToken;
+            } while (continuationToken);
+
+            return { fileCount, folderCount, totalSize };
+        } catch (error: any) {
+            console.error('Error getting folder stats:', error);
+            throw new Error(`Failed to get folder stats: ${error.message}`);
+        }
+    }
+
+    /**
+     * Get all subfolders recursively
+     */
+    async getSubFolders(folderPath: string, recursive: boolean = false): Promise<string[]> {
+        try {
+            const prefix = this.normalizePath(folderPath, true);
+            const folders: string[] = [];
+            let continuationToken: string | undefined;
+
+            do {
+                const listParams: AWS.S3.ListObjectsV2Request = {
+                    Bucket: this.bucketName,
+                    Prefix: prefix,
+                    Delimiter: recursive ? undefined : '/',
+                    ContinuationToken: continuationToken,
+                };
+
+                const response = await this.client.listObjectsV2(listParams).promise();
+
+                if (response.CommonPrefixes) {
+                    for (const prefixItem of response.CommonPrefixes) {
+                        if (prefixItem.Prefix) {
+                            folders.push(prefixItem.Prefix);
+                            if (recursive) {
+                                const subFolders = await this.getSubFolders(prefixItem.Prefix, true);
+                                folders.push(...subFolders);
+                            }
+                        }
+                    }
+                }
+
+                continuationToken = response.NextContinuationToken;
+            } while (continuationToken);
+
+            return folders;
+        } catch (error: any) {
+            console.error('Error getting subfolders:', error);
+            throw new Error(`Failed to get subfolders: ${error.message}`);
+        }
+    }
+
+    /**
+     * Copy a folder
+     */
+    async copyFolder(sourcePath: string, destinationPath: string): Promise<number> {
+        try {
+            const sourcePrefix = this.normalizePath(sourcePath, true);
+            const destPrefix = this.normalizePath(destinationPath, true);
+
+            // Check if source folder exists
+            const sourceExists = await this.folderExists(sourcePath);
+            if (!sourceExists) {
+                throw new Error(`Source folder does not exist: ${sourcePath}`);
+            }
+
+            // List all objects in source folder
+            const listParams: AWS.S3.ListObjectsV2Request = {
+                Bucket: this.bucketName,
+                Prefix: sourcePrefix,
+            };
+
+            const listResponse = await this.client.listObjectsV2(listParams).promise();
+
+            if (!listResponse.Contents || listResponse.Contents.length === 0) {
+                return 0;
+            }
+
+            let copiedCount = 0;
+
+            for (const item of listResponse.Contents) {
+                if (!item.Key) continue;
+
+                // Calculate new key
+                const relativePath = item.Key.substring(sourcePrefix.length);
+                const newKey = destPrefix + relativePath;
+
+                // Copy to new location
+                const copyParams: AWS.S3.CopyObjectRequest = {
+                    Bucket: this.bucketName,
+                    CopySource: `${this.bucketName}/${item.Key}`,
+                    Key: newKey,
+                };
+
+                await this.client.copyObject(copyParams).promise();
+                copiedCount++;
+            }
+
+            console.log(`📂 Folder copied: ${sourcePrefix} -> ${destPrefix} (${copiedCount} objects)`);
+            return copiedCount;
+        } catch (error: any) {
+            console.error('Error copying folder:', error);
+            throw new Error(`Failed to copy folder: ${error.message}`);
+        }
     }
 }
 
