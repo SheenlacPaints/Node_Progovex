@@ -1,4 +1,6 @@
 // backend/src/server.ts
+import './polyfills/crypto-polyfill';
+
 import dotenv from 'dotenv';
 dotenv.config();
 import express, { Request, Response, NextFunction } from 'express';
@@ -15,7 +17,7 @@ import {
     closeSQLConnection
 } from './config/database';
 import { errorHandler } from './middleware/errorHandler';
-import { apiLimiter } from './middleware/rateLimiter';
+// import { apiLimiter } from './middleware/rateLimiter';
 
 import authRoutes from './routes/authRoutes';
 import postRoutes from './routes/postRoutes';
@@ -176,7 +178,7 @@ app.use('/node/api/gmail', gmailRoutes);
 app.use('/node/api/users', userRoutes);
 app.use('/node/api/admin', adminRoutes);
 app.use('/node/api/s3', s3Routes);
-app.use('/node/api', apiLimiter);
+// app.use('/node/api', apiLimiter);
 app.use('/node/api/post/media', mediaRoutes);
 
 app.get('/cors-test', (req: Request, res: Response) => {
