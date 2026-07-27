@@ -368,9 +368,9 @@ export const getPosts = async (req: AuthRequest, res: Response) => {
         }
         var orderBy = "desc";
         if ((filterType === 'all') && (sortByType == "latest")) {
-            orderBy = "p.created_at desc";
+            orderBy = "p.approved_at desc";
         }else if ((filterType === 'all') && (sortByType == "oldest")) {
-            orderBy = "p.created_at asc";
+            orderBy = "p.approved_at asc";
         }
         else if ((filterType === 'all') && (sortByType == "most-liked")) {
             orderBy = "p.likes_count desc";
@@ -380,10 +380,10 @@ export const getPosts = async (req: AuthRequest, res: Response) => {
         }
         else if ((filterType === 'my-posts') && (sortByType == "latest")) {
             whereConditions.push(`p.cuserid = @userId`);
-            orderBy = "p.created_at desc";
+            orderBy = "p.approved_at desc";
         }else if ((filterType === 'my-posts') && (sortByType == "oldest")) {
             whereConditions.push(`p.cuserid = @userId`);
-            orderBy = "p.created_at asc";
+            orderBy = "p.approved_at asc";
         }
         else if ((filterType === 'my-posts') && (sortByType == "most-liked")) {
             whereConditions.push(`p.cuserid = @userId`);
@@ -395,10 +395,10 @@ export const getPosts = async (req: AuthRequest, res: Response) => {
         }
         else if((filterType === 'saved') && (sortByType == "latest")){
             whereConditions.push(`p.id IN ( SELECT post_id FROM nt_saved_posts WHERE cuserid = @userId )`);
-            orderBy = "p.created_at desc";
+            orderBy = "p.approved_at desc";
         }else if((filterType === 'saved') && (sortByType == "oldest")){
             whereConditions.push(`p.id IN ( SELECT post_id FROM nt_saved_posts WHERE cuserid = @userId )`);
-            orderBy = "p.created_at asc";
+            orderBy = "p.approved_at asc";
         }        
         else if((filterType === 'saved') && (sortByType == "most-liked")){
             whereConditions.push(`p.id IN ( SELECT post_id FROM nt_saved_posts WHERE cuserid = @userId )`);
