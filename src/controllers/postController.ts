@@ -669,7 +669,7 @@ export const deletePost = async (req: AuthRequest, res: Response) => {
     console.log(userId,"userId");
     console.log(id,"id");
     //let query = 'DELETE FROM nt_posts WHERE id = @postId AND cuserid = @userId';
-    let query = "UPDATE nt_posts SET status = 'deleted' WHERE id = @postId AND cuserid = @userId";
+    let query = "UPDATE nt_posts SET status = 'deleted', original_post_id = NULL WHERE id = @postId AND cuserid = @userId";
     let params: any = { postId: parseInt(id), userId };
     console.log(query,"query");
     if (userRole === 'admin') {
@@ -1637,12 +1637,12 @@ export const resharePost = async (req: AuthRequest, res: Response) => {
         const result = await executeNonQuery(
             `INSERT INTO nt_posts (
                 cuserid, content, type, media_urls, original_post_id, is_reshare, 
-                status, approval_status, created_at, likes_count, comments_count, shares_count
+                status, approval_status, approved_at, created_at, likes_count, comments_count, shares_count
              )
              OUTPUT INSERTED.id
              VALUES (
                  @userId, @content, @type, @mediaUrls, @postId, 1, 
-                 'approved', 'approved', GETDATE(), 0, 0, 0
+                 'approved', 'approved', GETDATE(), GETDATE(), 0, 0, 0
              )`,
             {
                 userId,
