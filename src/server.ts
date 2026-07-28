@@ -31,9 +31,9 @@ const app = express();
 const server = http.createServer(app);
 
 const allowedOrigins = [
-    'https://devtaskflow.sheenlac.com',
-    'https://devmeet.sheenlac.com',
-    'http://devtaskflow.sheenlac.com',
+    'https://taskflow.sheenlac.com',
+    'https://meet.sheenlac.com',
+    'http://taskflow.sheenlac.com',
     'http://localhost:4200',
     'http://localhost:3000',
     'http://127.0.0.1:4200',
