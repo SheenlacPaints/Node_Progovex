@@ -942,3 +942,18 @@ export const removeReportPost = async (req: AuthRequest, res: Response) => {
     });
   }
 };
+
+export const reportList = async (req: AuthRequest, res: Response) => {
+    const { id } = req.params;
+    const reactions = await executeQuery<any>(
+        `	SELECT b.cfirst_name,a.reason
+        FROM nt_reports a
+        JOIN users b
+            ON a.cuserid = b.cuserid
+        WHERE a.post_id = @postId
+        GROUP BY
+            b.cfirst_name,a.reason;`,
+        { postId: parseInt(id) }
+    );
+    res.json({ success: true, reactions });
+};

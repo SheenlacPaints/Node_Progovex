@@ -1274,11 +1274,7 @@ export const reportPost = async (req: AuthRequest, res: Response) => {
     );
 
     await executeNonQuery(
-        'INSERT INTO nt_reports (post_id, cuserid, reason, description) VALUES (@postId, @userId, @reason, @description)',
-        { postId: parseInt(id), userId, reason, description }
-    );
-    await executeNonQuery(
-        "UPDATE nt_posts SET report_flg = 'report' WHERE id = @postId",
+        "UPDATE nt_posts SET report_flg = 'report', report_count = report_count + 1 WHERE id = @postId",
         { postId: parseInt(id) }
     );
 
