@@ -46,7 +46,7 @@ export class MeetingController {
                 await MeetingDbService.logMeeting(meeting.id, userId, 'participants_added', participantIds.join(','));
             }
 
-            const inviteLink = `${process.env.CLIENT_URL || 'http://localhost:4200'}/meeting/join/${meeting.meeting_code}`;
+            const inviteLink = `${process.env.FRONTEND_URL || process.env.CLIENT_URL || 'http://localhost:4200'}/meeting/join/${meeting.meeting_code}`;
 
             res.json({
                 success: true,
@@ -331,7 +331,7 @@ export class MeetingController {
             }
 
             await MeetingDbService.logMeeting(meeting.id, userId, 'invited_bulk', emails.join(','));
-            const inviteLink = `${process.env.CLIENT_URL || 'http://localhost:4200'}/meeting/join/${meeting.meeting_code}`;
+            const inviteLink = `${process.env.FRONTEND_URL || process.env.CLIENT_URL || 'http://localhost:4200'}/meeting/join/${meeting.meeting_code}`;
 
             res.json({ success: true, invited, invite_link: inviteLink });
         } catch (error: any) {
@@ -374,7 +374,7 @@ export class MeetingController {
             }
 
             await MeetingDbService.logMeeting(meeting.id, userId, 'scheduled');
-            const inviteLink = `${process.env.CLIENT_URL || 'http://localhost:4200'}/meeting/join/${meeting.meeting_code}`;
+            const inviteLink = `${process.env.FRONTEND_URL || process.env.CLIENT_URL || 'http://localhost:4200'}/meeting/join/${meeting.meeting_code}`;
 
             res.json({
                 success: true,

@@ -5,6 +5,8 @@ import { AuthRequest } from '../middleware/auth';
 import { s3Helper } from '../helpers/s3.helper';
 import { Readable } from 'stream';
 
+const FRONTEND_URL = process.env.FRONTEND_URL || 'http://localhost:4200';
+
 export const streamMedia = async (req: AuthRequest, res: Response) => {
     try {
         const { key } = req.query;
@@ -47,7 +49,7 @@ export const streamMedia = async (req: AuthRequest, res: Response) => {
         res.setHeader('Content-Length', contentLength);
         res.setHeader('Cache-Control', 'public, max-age=31536000');
         res.setHeader('Accept-Ranges', 'bytes');
-        res.setHeader('Access-Control-Allow-Origin', 'http://localhost:4200');
+        res.setHeader('Access-Control-Allow-Origin', FRONTEND_URL);
         res.setHeader('Access-Control-Allow-Credentials', 'true');
         res.setHeader('Access-Control-Expose-Headers', 'Content-Range, Content-Length, Accept-Ranges');
 
@@ -67,7 +69,7 @@ export const streamMedia = async (req: AuthRequest, res: Response) => {
                 'Accept-Ranges': 'bytes',
                 'Content-Length': chunksize,
                 'Content-Type': contentType,
-                'Access-Control-Allow-Origin': 'http://localhost:4200',
+                'Access-Control-Allow-Origin': FRONTEND_URL,
                 'Access-Control-Allow-Credentials': 'true',
                 'Access-Control-Expose-Headers': 'Content-Range, Content-Length, Accept-Ranges',
             });
