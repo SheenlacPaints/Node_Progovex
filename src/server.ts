@@ -87,7 +87,6 @@ const io = new Server(server, {
         allowedHeaders: ['Content-Type', 'Authorization']
     },
     transports: ['polling', 'websocket'],
-    allowUpgrades: false,
     pingTimeout: 120000,
     pingInterval: 50000
 });
