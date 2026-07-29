@@ -56,3 +56,11 @@ if (typeof globalThis.Blob === 'undefined') {
   const { Blob } = require('buffer');
   (globalThis as any).Blob = Blob;
 }
+
+// Minimal stubs so gaxios instanceof checks don't throw on Node < 18
+if (typeof globalThis.FormData === 'undefined') {
+  (globalThis as any).FormData = class FormData {};
+}
+if (typeof globalThis.ReadableStream === 'undefined') {
+  (globalThis as any).ReadableStream = class ReadableStream {};
+}
