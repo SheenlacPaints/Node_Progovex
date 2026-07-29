@@ -9,6 +9,7 @@ import { Server } from 'socket.io';
 import cors from 'cors';
 import helmet from 'helmet';
 import compression from 'compression';
+import cookieParser from 'cookie-parser';
 import path from 'path';
 
 import {
@@ -21,11 +22,16 @@ import { apiLimiter } from './middleware/rateLimiter';
 
 import authRoutes from './routes/authRoutes';
 import postRoutes from './routes/postRoutes';
-import gmailRoutes from './routes/gmail.routes';
+import gmailIntegration from './routes/gmailIntegration';
 import userRoutes from './routes/userRoutes';
 import adminRoutes from './routes/adminRoutes';
 import s3Routes from './routes/s3.routes';
 import mediaRoutes from './routes/mediaRoutes';
+import { gmailTokenDbService } from './services/gmailTokenDb.service';
+import meetingRoutes from './routes/meeting.routes';
+import meetingUploadRoutes from './routes/meetingUpload.routes';
+import { MeetingDbService } from './services/meetingDb.service';
+import { registerMeetingSocketHandlers } from './sockets/meetingSocketHandler';
 
 const app = express();
 const server = http.createServer(app);
@@ -97,6 +103,7 @@ app.use(helmet({
 app.use(compression());
 app.use(express.json({ limit: '500mb' }));
 app.use(express.urlencoded({ extended: true, limit: '500mb' }));
+app.use(cookieParser());
 
 console.log('Server starting...');
 console.log('Allowed Origins:', allowedOrigins);
@@ -174,7 +181,9 @@ app.use('/uploads', express.static(path.join(__dirname, '../uploads'), {
 
 app.use('/node/api/auth', authRoutes);
 app.use('/node/api/posts', postRoutes);
-app.use('/node/api/gmail', gmailRoutes);
+app.use('/node/api/gmail', gmailIntegration);
+app.use('/node/api/meetings', meetingRoutes);
+app.use('/node/api/meetings/upload', meetingUploadRoutes);
 app.use('/node/api/users', userRoutes);
 app.use('/node/api/admin', adminRoutes);
 app.use('/node/api/s3', s3Routes);
@@ -232,6 +241,9 @@ app.get('/', (req: Request, res: Response) => {
 app.use(errorHandler);
 
 connectMongoDB().catch(console.error);
+gmailTokenDbService.ensureTable().catch(console.error);
+MeetingDbService.ensureTables().catch(console.error);
+registerMeetingSocketHandlers(io);
 
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
