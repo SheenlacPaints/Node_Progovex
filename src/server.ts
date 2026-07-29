@@ -36,10 +36,13 @@ import { registerMeetingSocketHandlers } from './sockets/meetingSocketHandler';
 const app = express();
 const server = http.createServer(app);
 
+const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:4200';
+const extraOrigins = process.env.ALLOWED_ORIGINS
+    ? process.env.ALLOWED_ORIGINS.split(',').map(s => s.trim()).filter(Boolean)
+    : [];
 const allowedOrigins = [
-    'https://taskflow.sheenlac.com',
-    'https://meet.sheenlac.com',
-    'http://taskflow.sheenlac.com',
+    frontendUrl,
+    ...extraOrigins,
     'http://localhost:4200',
     'http://localhost:3000',
     'http://127.0.0.1:4200',
@@ -173,7 +176,7 @@ io.on('connection', (socket) => {
 
 app.use('/uploads', express.static(path.join(__dirname, '../uploads'), {
     setHeaders: (res) => {
-        res.setHeader('Access-Control-Allow-Origin', 'http://localhost:4200');
+        res.setHeader('Access-Control-Allow-Origin', frontendUrl);
         res.setHeader('Access-Control-Allow-Credentials', 'true');
         res.setHeader('Cache-Control', 'public, max-age=31536000');
     }
