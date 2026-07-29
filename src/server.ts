@@ -34,6 +34,7 @@ import { MeetingDbService } from './services/meetingDb.service';
 import { registerMeetingSocketHandlers } from './sockets/meetingSocketHandler';
 
 const app = express();
+app.set('trust proxy', true);
 const server = http.createServer(app);
 
 const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:4200';
@@ -85,11 +86,10 @@ const io = new Server(server, {
         methods: ['GET', 'POST', 'OPTIONS'],
         allowedHeaders: ['Content-Type', 'Authorization']
     },
-    transports: ['websocket', 'polling'],
-    allowEIO3: true,
-    pingTimeout: 60000,
-    pingInterval: 25000,
-    upgradeTimeout: 10000
+    transports: ['polling', 'websocket'],
+    allowUpgrades: false,
+    pingTimeout: 120000,
+    pingInterval: 50000
 });
 
 app.set('io', io);
