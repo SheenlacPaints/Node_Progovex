@@ -51,3 +51,8 @@ if (typeof globalThis.Headers === 'undefined') {
 
   (globalThis as any).Headers = HeadersPolyfill;
 }
+
+if (typeof globalThis.Blob === 'undefined') {
+  const { Blob } = require('buffer');
+  (globalThis as any).Blob = Blob;
+}
