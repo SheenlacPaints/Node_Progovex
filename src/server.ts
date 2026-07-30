@@ -33,6 +33,7 @@ const server = http.createServer(app);
 const allowedOrigins = [
     'https://taskflow.sheenlac.com',
     'https://meet.sheenlac.com',
+    'https://progovex.sheenlac.com',
     'http://taskflow.sheenlac.com',
     'http://localhost:4200',
     'http://localhost:3000',
