@@ -9,6 +9,7 @@ import { Server } from 'socket.io';
 import cors from 'cors';
 import helmet from 'helmet';
 import compression from 'compression';
+import cookieParser from 'cookie-parser';
 import path from 'path';
 
 import {
@@ -21,15 +22,25 @@ import { apiLimiter } from './middleware/rateLimiter';
 
 import authRoutes from './routes/authRoutes';
 import postRoutes from './routes/postRoutes';
-import gmailRoutes from './routes/gmail.routes';
+import gmailIntegration from './routes/gmailIntegration';
 import userRoutes from './routes/userRoutes';
 import adminRoutes from './routes/adminRoutes';
 import s3Routes from './routes/s3.routes';
 import mediaRoutes from './routes/mediaRoutes';
+import { gmailTokenDbService } from './services/gmailTokenDb.service';
+import meetingRoutes from './routes/meeting.routes';
+import meetingUploadRoutes from './routes/meetingUpload.routes';
+import { MeetingDbService } from './services/meetingDb.service';
+import { registerMeetingSocketHandlers } from './sockets/meetingSocketHandler';
 
 const app = express();
+app.set('trust proxy', true);
 const server = http.createServer(app);
 
+const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:4200';
+const extraOrigins = process.env.ALLOWED_ORIGINS
+    ? process.env.ALLOWED_ORIGINS.split(',').map(s => s.trim()).filter(Boolean)
+    : [];
 const allowedOrigins = [
     'https://taskflow.sheenlac.com',
     'https://meet.sheenlac.com',
@@ -77,11 +88,9 @@ const io = new Server(server, {
         methods: ['GET', 'POST', 'OPTIONS'],
         allowedHeaders: ['Content-Type', 'Authorization']
     },
-    transports: ['websocket', 'polling'],
-    allowEIO3: true,
-    pingTimeout: 60000,
-    pingInterval: 25000,
-    upgradeTimeout: 10000
+    transports: ['polling', 'websocket'],
+    pingTimeout: 120000,
+    pingInterval: 50000
 });
 
 app.set('io', io);
@@ -98,6 +107,7 @@ app.use(helmet({
 app.use(compression());
 app.use(express.json({ limit: '500mb' }));
 app.use(express.urlencoded({ extended: true, limit: '500mb' }));
+app.use(cookieParser());
 
 console.log('Server starting...');
 console.log('Allowed Origins:', allowedOrigins);
@@ -167,7 +177,7 @@ io.on('connection', (socket) => {
 
 app.use('/uploads', express.static(path.join(__dirname, '../uploads'), {
     setHeaders: (res) => {
-        res.setHeader('Access-Control-Allow-Origin', 'http://localhost:4200');
+        res.setHeader('Access-Control-Allow-Origin', frontendUrl);
         res.setHeader('Access-Control-Allow-Credentials', 'true');
         res.setHeader('Cache-Control', 'public, max-age=31536000');
     }
@@ -175,7 +185,9 @@ app.use('/uploads', express.static(path.join(__dirname, '../uploads'), {
 
 app.use('/node/api/auth', authRoutes);
 app.use('/node/api/posts', postRoutes);
-app.use('/node/api/gmail', gmailRoutes);
+app.use('/node/api/gmail', gmailIntegration);
+app.use('/node/api/meetings', meetingRoutes);
+app.use('/node/api/meetings/upload', meetingUploadRoutes);
 app.use('/node/api/users', userRoutes);
 app.use('/node/api/admin', adminRoutes);
 app.use('/node/api/s3', s3Routes);
@@ -233,6 +245,9 @@ app.get('/', (req: Request, res: Response) => {
 app.use(errorHandler);
 
 connectMongoDB().catch(console.error);
+gmailTokenDbService.ensureTable().catch(console.error);
+MeetingDbService.ensureTables().catch(console.error);
+registerMeetingSocketHandlers(io);
 
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {

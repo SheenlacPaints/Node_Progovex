@@ -70,7 +70,8 @@ export const executeQuery = async <T = any>(
         // Add parameters if provided
         if (params) {
             Object.keys(params).forEach(key => {
-                request.input(key, params[key]);
+                const val = params[key];
+                request.input(key, val === null ? undefined : val);
             });
         }
         
@@ -96,7 +97,8 @@ export const executeNonQuery = async (
         // Add parameters if provided
         if (params) {
             Object.keys(params).forEach(key => {
-                request.input(key, params[key]);
+                const val = params[key];
+                request.input(key, val === null ? undefined : val);
             });
         }
         
