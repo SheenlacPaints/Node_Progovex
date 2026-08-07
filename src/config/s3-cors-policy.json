@@ -1,0 +1,20 @@
+[
+  {
+    "AllowedOrigins": [
+      "https://progovex.sheenlac.com",
+      "http://progovex.sheenlac.com",
+      "http://localhost:4200",
+      "https://localhost:4200",
+      "http://127.0.0.1:4200",
+      "https://taskflow.sheenlac.com",
+      "http://taskflow.sheenlac.com",
+      "https://devtaskflow.sheenlac.com",
+      "http://devtaskflow.sheenlac.com",
+      "https://meet.sheenlac.com"
+    ],
+    "AllowedMethods": ["GET", "PUT", "POST", "DELETE", "HEAD"],
+    "AllowedHeaders": ["*"],
+    "ExposeHeaders": ["ETag", "Content-Length"],
+    "MaxAgeSeconds": 3000
+  }
+]
