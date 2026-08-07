@@ -10,7 +10,8 @@
       "http://taskflow.sheenlac.com",
       "https://devtaskflow.sheenlac.com",
       "http://devtaskflow.sheenlac.com",
-      "https://meet.sheenlac.com"
+      "https://meet.sheenlac.com",
+      "https://devmeet.sheenlac.com"
     ],
     "AllowedMethods": ["GET", "PUT", "POST", "DELETE", "HEAD"],
     "AllowedHeaders": ["*"],

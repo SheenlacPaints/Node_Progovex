@@ -44,8 +44,10 @@ const extraOrigins = process.env.ALLOWED_ORIGINS
 const allowedOrigins = [
     'https://taskflow.sheenlac.com',
     'https://meet.sheenlac.com',
+    'https://devmeet.sheenlac.com',
     'https://progovex.sheenlac.com',
     'http://devtaskflow.sheenlac.com',
+    'https://devtaskflow.sheenlac.com',
     'http://localhost:4200',
     'http://localhost:3000',
     'http://127.0.0.1:4200',
