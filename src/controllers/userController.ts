@@ -273,8 +273,8 @@ export const getNotifications = async (req: AuthRequest, res: Response) => {
                 reference_id, 
                 reference_type, 
                 content, 
-                is_read, 
-                created_at
+                is_read,
+                FORMAT(created_at, 'yyyy-MM-dd HH:mm:ss') as created_at
              FROM nt_notifications 
              WHERE cuserid = @userId
              ORDER BY created_at DESC
@@ -300,14 +300,14 @@ export const getNotifications = async (req: AuthRequest, res: Response) => {
             let fromUser = null;
             if (notif.from_user_id) {
                 const userResult = await executeQuery<any>(
-                    'SELECT username, full_name, cprofile_image_name as avatar_url FROM users WHERE id = @userId',
+                    'SELECT cuser_name, cfirst_name, cprofile_image_name as avatar_url FROM users WHERE cuserid = @userId',
                     { userId: notif.from_user_id }
                 );
                 const userData = userResult[0];
                 if (userData) {
                     fromUser = {
-                        username: userData.username,
-                        fullName: userData.full_name,
+                        username: userData.cuser_name,
+                        fullName: userData.cfirst_name,
                         avatarUrl: userData.avatar_url
                     };
                 }
@@ -321,7 +321,7 @@ export const getNotifications = async (req: AuthRequest, res: Response) => {
                 referenceId: notif.reference_id,
                 referenceType: notif.reference_type || 'post',
                 content: notif.content || getDefaultNotificationContent(notif.type, fromUser),
-                isRead: notif.is_read === 1,
+                isRead: notif.is_read,
                 createdAt: notif.created_at,
                 fromUser: fromUser
             });

@@ -28,3 +28,16 @@ export const authLimiter = rateLimit({
     standardHeaders: true,
     legacyHeaders: false
 });
+
+// Lenient limiter for media/static file requests (images, videos, etc.)
+export const mediaLimiter = rateLimit({
+    windowMs: 1 * 60 * 1000, // 1 minute window
+    max: 1000, // Allow 1000 requests per minute for media
+    message: 'Too many media requests',
+    standardHeaders: true,
+    legacyHeaders: false,
+    skip: (req: Request) => {
+        // Don't rate limit health checks or CORS test
+        return req.path === '/health' || req.path === '/cors-test';
+    }
+});

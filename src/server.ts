@@ -18,7 +18,7 @@ import {
     closeSQLConnection
 } from './config/database';
 import { errorHandler } from './middleware/errorHandler';
-// import { apiLimiter } from './middleware/rateLimiter';
+import { apiLimiter, mediaLimiter } from './middleware/rateLimiter';
 
 import authRoutes from './routes/authRoutes';
 import postRoutes from './routes/postRoutes';
@@ -42,8 +42,10 @@ const extraOrigins = process.env.ALLOWED_ORIGINS
     ? process.env.ALLOWED_ORIGINS.split(',').map(s => s.trim()).filter(Boolean)
     : [];
 const allowedOrigins = [
-    frontendUrl,
-    ...extraOrigins,
+    'https://taskflow.sheenlac.com',
+    'https://meet.sheenlac.com',
+    'https://progovex.sheenlac.com',
+    'http://taskflow.sheenlac.com',
     'http://localhost:4200',
     'http://localhost:3000',
     'http://127.0.0.1:4200',
@@ -87,7 +89,6 @@ const io = new Server(server, {
         allowedHeaders: ['Content-Type', 'Authorization']
     },
     transports: ['polling', 'websocket'],
-    allowUpgrades: false,
     pingTimeout: 120000,
     pingInterval: 50000
 });
@@ -182,16 +183,16 @@ app.use('/uploads', express.static(path.join(__dirname, '../uploads'), {
     }
 }));
 
-app.use('/node/api/auth', authRoutes);
-app.use('/node/api/posts', postRoutes);
-app.use('/node/api/gmail', gmailIntegration);
-app.use('/node/api/meetings', meetingRoutes);
-app.use('/node/api/meetings/upload', meetingUploadRoutes);
-app.use('/node/api/users', userRoutes);
-app.use('/node/api/admin', adminRoutes);
-app.use('/node/api/s3', s3Routes);
-// app.use('/node/api', apiLimiter);
-app.use('/node/api/post/media', mediaRoutes);
+app.use('/node/api/auth', apiLimiter, authRoutes);
+app.use('/node/api/posts', apiLimiter, postRoutes);
+app.use('/node/api/gmail', apiLimiter, gmailIntegration);
+app.use('/node/api/meetings', apiLimiter, meetingRoutes);
+app.use('/node/api/meetings/upload', apiLimiter, meetingUploadRoutes);
+app.use('/node/api/users', apiLimiter, userRoutes);
+app.use('/node/api/admin', apiLimiter, adminRoutes);
+app.use('/node/api/s3', apiLimiter, s3Routes);
+// Media routes use lenient rate limiter for image/video streaming
+app.use('/node/api/post/media', mediaLimiter, mediaRoutes);
 
 app.get('/cors-test', (req: Request, res: Response) => {
     res.json({

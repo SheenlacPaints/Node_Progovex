@@ -230,8 +230,10 @@ export const approvePost = async (req: AuthRequest, res: Response) => {
     console.log("2222222222222222222222222222222222");
     const { id } = req.params;
     const adminId = req.user!.id;
+    const { reason } = req.body;
+    const approveRemark = (reason || '').trim();
 
-    console.log('Approving post:', { postId: id, adminId });
+    console.log('Approving post:', { postId: id, adminId ,approveRemark});
 
     // Update post with approval status and set approved_at to GETDATE()
     const result = await executeNonQuery(
@@ -240,7 +242,8 @@ export const approvePost = async (req: AuthRequest, res: Response) => {
            status = 'approved', 
            approved_by = @adminId, 
            approved_at = GETDATE() 
-       WHERE id = @postId AND approval_status = 'waiting'`,
+       WHERE id = @postId -- AND approval_status = 'waiting'
+       `,
       { adminId, postId: parseInt(id) }
     );
 
@@ -249,6 +252,34 @@ export const approvePost = async (req: AuthRequest, res: Response) => {
         success: false,
         message: 'Post not found or already processed'
       });
+    }
+
+    
+    const postDetails = await executeQuery<any>(
+      `SELECT p.id, p.cuserid, u.cuser_name as username
+       FROM nt_posts p
+       JOIN users u ON p.cuserid = u.cuserid
+       WHERE p.id = @postId`,
+      { postId: parseInt(id) }
+    );
+
+    const post = postDetails[0];
+
+        if (post?.cuserid) {
+      const notificationContent = approveRemark
+        ? `Your post was approved by admin. Remarks: ${approveRemark}`
+        : 'Your post was approved by admin.';
+
+      await executeNonQuery(
+        `INSERT INTO nt_notifications (cuserid, from_user_id, type, reference_id, reference_type, content, created_at)
+         VALUES (@userId, @fromUserId, 'approval', @referenceId, 'post', @content, GETDATE())`,
+        {
+          userId: post.cuserid,
+          fromUserId: adminId,
+          referenceId: parseInt(id),
+          content: notificationContent
+        }
+      );
     }
 
     // Get the approved post with all details including user info and parsed data
@@ -290,6 +321,7 @@ export const approvePost = async (req: AuthRequest, res: Response) => {
         postId: parseInt(id),
         details: JSON.stringify({
           postId: id,
+          reason: approveRemark || 'No reason provided',
           created_at: approvedPost.created_at,
           approved_at: approvedPost.approved_at
         }),
@@ -303,6 +335,7 @@ export const approvePost = async (req: AuthRequest, res: Response) => {
       // Emit to all clients that a post was approved
       io.emit('post_approved_live', {
         post: approvedPost,
+        reason: approveRemark || 'No reason provided',
         postId: parseInt(id),
         approved_at: approvedPost.approved_at
       });
@@ -311,7 +344,8 @@ export const approvePost = async (req: AuthRequest, res: Response) => {
       io.to(`post_${id}`).emit('post_status_changed', {
         postId: parseInt(id),
         status: 'approved',
-        post: approvedPost
+        post: approvedPost,
+        reason: approveRemark || 'No reason provided',
       });
 
       console.log(`📤 Emitted post_approved_live for post ${id}`);
@@ -337,10 +371,11 @@ export const approvePost = async (req: AuthRequest, res: Response) => {
 export const rejectPost = async (req: AuthRequest, res: Response) => {
   try {
     const { id } = req.params;
-    const { reason } = req.body;
+    const { reason, remarks } = req.body;
+    const rejectionRemark = (remarks || reason || '').trim();
     const adminId = req.user!.id;
 
-    console.log('Rejecting post:', { postId: id, adminId, reason });
+    console.log('Rejecting post:', { postId: id, adminId, rejectionRemark });
 
     // Update post status - approved_at remains NULL for rejected posts
     const result = await executeNonQuery(
@@ -360,12 +395,39 @@ export const rejectPost = async (req: AuthRequest, res: Response) => {
       });
     }
 
+    const postDetails = await executeQuery<any>(
+      `SELECT p.id, p.cuserid, u.cuser_name as username
+       FROM nt_posts p
+       JOIN users u ON p.cuserid = u.cuserid
+       WHERE p.id = @postId`,
+      { postId: parseInt(id) }
+    );
+
+    const post = postDetails[0];
+
     // Log rejection reason (optional)
-    if (reason) {
+    if (rejectionRemark) {
       await executeNonQuery(
         `INSERT INTO nt_post_rejection_logs (post_id, admin_id, reason, created_at) 
          VALUES (@postId, @adminId, @reason, GETDATE())`,
-        { postId: parseInt(id), adminId, reason }
+        { postId: parseInt(id), adminId, reason: rejectionRemark }
+      );
+    }
+
+    if (post?.cuserid) {
+      const notificationContent = rejectionRemark
+        ? `Your post was rejected by admin. Remarks: ${rejectionRemark}`
+        : 'Your post was rejected by admin.';
+
+      await executeNonQuery(
+        `INSERT INTO nt_notifications (cuserid, from_user_id, type, reference_id, reference_type, content, created_at)
+         VALUES (@userId, @fromUserId, 'rejection', @referenceId, 'post', @content, GETDATE())`,
+        {
+          userId: post.cuserid,
+          fromUserId: adminId,
+          referenceId: parseInt(id),
+          content: notificationContent
+        }
       );
     }
 
@@ -376,7 +438,7 @@ export const rejectPost = async (req: AuthRequest, res: Response) => {
       {
         adminId,
         postId: parseInt(id),
-        details: JSON.stringify({ reason: reason || 'No reason provided' }),
+        details: JSON.stringify({ reason: rejectionRemark || 'No reason provided' }),
         ip: req.ip || 'unknown'
       }
     );
@@ -386,7 +448,7 @@ export const rejectPost = async (req: AuthRequest, res: Response) => {
     if (io) {
       io.emit('post_rejected', {
         postId: parseInt(id),
-        reason: reason || 'No reason provided'
+        reason: rejectionRemark || 'No reason provided'
       });
     }
 

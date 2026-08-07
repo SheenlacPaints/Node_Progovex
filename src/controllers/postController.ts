@@ -56,7 +56,8 @@ const uploadToS3 = async (
                     'processed': 'true',
                 },
             });
-            return result.url;
+            // Return relative URL that goes through media endpoint to avoid CORS issues
+            return `/node/api/post/media/stream?key=${encodeURIComponent(result.key)}`;
         } else {
             // Video or other files - keep original extension
             const result = await s3Helper.uploadFile(fileBuffer, {
@@ -68,7 +69,8 @@ const uploadToS3 = async (
                     'file-size': file.size.toString(),
                 },
             });
-            return result.url;
+            // Return relative URL that goes through media endpoint to avoid CORS issues
+            return `/node/api/post/media/stream?key=${encodeURIComponent(result.key)}`;
         }
     } catch (error) {
         console.error('Error uploading to S3:', error);
@@ -316,7 +318,7 @@ const convertToProxyUrl = (mediaUrl: string): string => {
     if (!mediaUrl) return mediaUrl;
 
     // If it's already a proxy URL, return as is
-    if (mediaUrl.includes('/media/stream')) {
+    if (mediaUrl.includes('/post/media/stream') || mediaUrl.includes('/media/stream')) {
         return mediaUrl;
     }
 
@@ -325,9 +327,8 @@ const convertToProxyUrl = (mediaUrl: string): string => {
         try {
             const key = mediaUrl.split('.amazonaws.com/')[1];
             if (key) {
-                // ✅ Use the correct base URL with /node prefix
-                const baseUrl = process.env.APP_URL;
-                return `${baseUrl}/media/stream?key=${encodeURIComponent(key)}`;
+                // ✅ Return relative URL that goes through backend media endpoint
+                return `/node/api/post/media/stream?key=${encodeURIComponent(key)}`;
             }
         } catch (error) {
             console.error('Error converting to proxy URL:', error);
@@ -754,7 +755,8 @@ export const addComment = async (req: AuthRequest, res: Response) => {
     try {
         const { postId, content, parentCommentId } = req.body;
         const userId = req.user!.id;
-
+        const commentRemarks = (content || "").trim();
+        console.log('📝 Adding comment to post:', postId, 'User:', userId, 'Parent Comment:', parentCommentId);
         // Insert comment
         const result = await executeNonQuery(
             `INSERT INTO nt_comments (post_id, cuserid, parent_comment_id, content, status) 
@@ -799,6 +801,41 @@ export const addComment = async (req: AuthRequest, res: Response) => {
             { postId: parseInt(postId) }
         );
         const newCommentsCount = countResult[0]?.comments_count || 0;
+
+        // Send notification to post owner if the commenter is not the post owner
+        const commentDetails = await executeQuery<any>(
+            `SELECT p.id, p.cuserid, u.cuser_name as username
+            FROM nt_posts p
+            JOIN users u ON p.cuserid = u.cuserid
+            WHERE p.id = @postId`,
+            { postId: parseInt(postId) }
+        );
+
+        const userDetails = await executeQuery<any>(
+        `SELECT u.cfirst_name, u.clast_name
+        FROM users u
+        WHERE u.cuserid = @userId`,
+        { userId: userId }
+        );
+
+        const commentInfo = commentDetails[0];
+
+        if (commentInfo?.cuserid != userId) {
+            const notificationContent = commentRemarks
+                ? `Your post was commented on by ${userDetails[0]?.cfirst_name || 'Someone'}. Remarks: ${commentRemarks}`
+                : 'Your post was commented on.';
+
+            await executeNonQuery(
+                `INSERT INTO nt_notifications (cuserid, from_user_id, type, reference_id, reference_type, content, created_at)
+                VALUES (@userId, @fromUserId, 'commented', @referenceId, 'post', @content, GETDATE())`,
+                {
+                userId: commentInfo.cuserid,
+                fromUserId: userId,
+                referenceId: parseInt(postId),
+                content: notificationContent
+                }
+            );
+        }
 
         // Send HTTP response
         res.json({
@@ -864,6 +901,23 @@ export const addReaction = async (req: AuthRequest, res: Response) => {
         let isLiked = false;
         let likesCount = 0;
 
+        // Get post and user details for notification
+        const likeDetails = await executeQuery<any>(
+            `SELECT p.id, p.cuserid, u.cuser_name as username
+            FROM nt_posts p
+            JOIN users u ON p.cuserid = u.cuserid
+            WHERE p.id = @postId`,
+            { postId: parseInt(postId) }
+        );
+
+        const userDetails = await executeQuery<any>(
+            `SELECT u.cfirst_name, u.clast_name
+            FROM users u
+            WHERE u.cuserid = @userId`,
+            { userId: userId }
+        );
+        const like = likeDetails[0];
+
         if (existing && existing.length > 0) {
             // Unlike - use square brackets for reserved keyword
             await executeNonQuery(
@@ -874,6 +928,17 @@ export const addReaction = async (req: AuthRequest, res: Response) => {
                 'UPDATE nt_posts SET likes_count = likes_count - 1 WHERE id = @postId',
                 { postId: parseInt(postId) }
             );
+            if (like?.cuserid != userId) {
+                await executeNonQuery(
+                    `DELETE FROM nt_notifications
+                    WHERE cuserid = @userId AND from_user_id = @fromUserId AND type = 'liked' AND reference_id = @referenceId AND reference_type = 'like'`,
+                    {
+                    userId: like.cuserid,
+                    fromUserId: userId,
+                    referenceId: parseInt(postId),
+                    }
+                );
+            }
             isLiked = false;
         } else {
             // Like - use square brackets for reserved keyword
@@ -885,6 +950,21 @@ export const addReaction = async (req: AuthRequest, res: Response) => {
                 'UPDATE nt_posts SET likes_count = likes_count + 1 WHERE id = @postId',
                 { postId: parseInt(postId) }
             );
+
+            if (like?.cuserid != userId) {
+                const notificationContent = `Your post was liked by ${userDetails[0]?.cfirst_name || 'Someone'}`;
+
+                await executeNonQuery(
+                    `INSERT INTO nt_notifications (cuserid, from_user_id, type, reference_id, reference_type, content, created_at)
+                    VALUES (@userId, @fromUserId, 'liked', @referenceId, 'like', @content, GETDATE())`,
+                    {
+                    userId: like.cuserid,
+                    fromUserId: userId,
+                    referenceId: parseInt(postId),
+                    content: notificationContent
+                    }
+                );
+            }
             isLiked = true;
         }
 
@@ -1267,6 +1347,7 @@ export const reportPost = async (req: AuthRequest, res: Response) => {
     const { id } = req.params;
     const { reason, description } = req.body;
     const userId = req.user!.id;
+    const reportRemarks = (reason || description).trim();
 
     await executeNonQuery(
         'INSERT INTO nt_reports (post_id, cuserid, reason, description) VALUES (@postId, @userId, @reason, @description)',
@@ -1277,6 +1358,40 @@ export const reportPost = async (req: AuthRequest, res: Response) => {
         "UPDATE nt_posts SET report_flg = 'report', report_count = report_count + 1 WHERE id = @postId",
         { postId: parseInt(id) }
     );
+
+    const reportDetails = await executeQuery<any>(
+      `SELECT p.id, p.cuserid, u.cuser_name as username
+       FROM nt_posts p
+       JOIN users u ON p.cuserid = u.cuserid
+       WHERE p.id = @postId`,
+      { postId: parseInt(id) }
+    );
+
+    const userDetails = await executeQuery<any>(
+      `SELECT u.cfirst_name, u.clast_name
+       FROM users u
+       WHERE u.cuserid = @userId`,
+      { userId: userId }
+    );
+
+    const report = reportDetails[0];
+
+    if (report?.cuserid) {
+      const notificationContent = reportRemarks
+        ? `Your post was reported by ${userDetails[0]?.cfirst_name || 'Someone'}. Remarks: ${reportRemarks}`
+        : 'Your post was reported.';
+
+      await executeNonQuery(
+        `INSERT INTO nt_notifications (cuserid, from_user_id, type, reference_id, reference_type, content, created_at)
+         VALUES (@userId, @fromUserId, 'reported', @referenceId, 'post', @content, GETDATE())`,
+        {
+          userId: report.cuserid,
+          fromUserId: userId,
+          referenceId: parseInt(id),
+          content: notificationContent
+        }
+      );
+    }
 
     res.json({ success: true, message: 'Post reported' });
 };

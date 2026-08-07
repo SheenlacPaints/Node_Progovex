@@ -28,6 +28,7 @@ import {
 } from '../controllers/adminController';
 import { authenticateToken, authorizeAdmin, authorizeModerator } from '../middleware/auth';
 import { strictLimiter } from '../middleware/rateLimiter';
+import { decryptRequest } from '../middleware/encryption';
 
 const router = Router();
 
@@ -42,10 +43,10 @@ router.get('/posts', getAllPostsForAdmin);
 router.get('/stats', getPostStats);  
 
 
-router.post('/posts/:id/approve', authorizeAdmin, approvePost);
-router.post('/posts/:id/reject', authorizeAdmin, rejectPost);
-router.post('/posts/bulk-approve', authorizeAdmin, bulkApprovePosts);
-router.post('/posts/bulk-reject', authorizeAdmin, bulkRejectPosts);
+router.post('/posts/:id/approve', decryptRequest, authorizeAdmin, approvePost);
+router.post('/posts/:id/reject', decryptRequest, authorizeAdmin, rejectPost);
+router.post('/posts/bulk-approve', decryptRequest, authorizeAdmin, bulkApprovePosts);
+router.post('/posts/bulk-reject', decryptRequest, authorizeAdmin, bulkRejectPosts);
 router.get('/posts/reported', getReportedPosts);
 router.post('/reports/:id/resolve', resolveReport);
 router.get('/moderation/queue', getModerationQueue);
