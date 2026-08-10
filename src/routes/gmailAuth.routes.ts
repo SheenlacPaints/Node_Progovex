@@ -79,6 +79,15 @@ router.get('/google/callback', async (req, res: Response) => {
   }
 });
 
+router.get('/debug-env', (req, res) => {
+  res.json({
+    FRONTEND_URL: process.env.FRONTEND_URL || 'http://localhost:4200',
+    GOOGLE_REDIRECT_URI: process.env.GOOGLE_REDIRECT_URI || 'NOT SET',
+    NODE_ENV: process.env.NODE_ENV || 'development',
+    processCwd: process.cwd(),
+  });
+});
+
 router.get('/status', gmailAuthMiddleware, async (req: GmailAuthenticatedRequest, res: Response) => {
   try {
     const userEmail = await gmailTokenDbService.getUserEmail(req.gmailUserId!);
