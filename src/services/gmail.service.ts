@@ -34,6 +34,13 @@ export interface AttachmentData {
 export class GmailService {
   private getGmailClient(tokens: OAuthTokens): any {
     const authClient = authService.createClientWithTokens(tokens);
+    const authorization = `Bearer ${tokens.access_token}`;
+    const originalRequest = authClient.request.bind(authClient);
+    authClient.request = (opts: any, callback?: any) => {
+      const headers: any = { ...(opts?.headers || {}) };
+      headers.Authorization = authorization;
+      return originalRequest({ ...opts, headers }, callback);
+    };
     return google.gmail({ version: 'v1', auth: authClient });
   }
 
