@@ -66,8 +66,7 @@ export class AuthService {
   }
 
   async getUserProfile(tokens: OAuthTokens): Promise<UserProfile> {
-    const client = this.getClient();
-    client.setCredentials(tokens);
+    const client = this.createClientWithTokens(tokens);
     const oauth2 = google.oauth2({ version: 'v2', auth: client } as any);
     const { data } = await oauth2.userinfo.get();
     return {
