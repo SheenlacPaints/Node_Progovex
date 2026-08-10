@@ -61,7 +61,8 @@ router.get('/google/callback', async (req, res: Response) => {
   try {
     console.log('[GmailAuth] Exchanging authorization code for tokens...');
     const tokens = await authService.getTokensFromCode(code);
-    console.log('[GmailAuth] Tokens received, fetching user profile...');
+    console.log('[GmailAuth] Tokens received - access_token:', tokens.access_token ? 'present' : 'MISSING', '| refresh_token:', tokens.refresh_token ? 'present' : 'MISSING', '| id_token:', tokens.id_token ? 'present' : 'MISSING', '| scope:', tokens.scope || '');
+    console.log('[GmailAuth] Fetching user profile...');
     const userProfile = await authService.getUserProfile(tokens);
     console.log('[GmailAuth] User:', userProfile.email);
 
