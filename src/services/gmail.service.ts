@@ -39,6 +39,32 @@ export class GmailService {
     console.log('[Gmail] getGmailClient - googleapis:', require('googleapis/package.json').version,
       '| token present:', !!tokens.access_token, '| auth header len:', authorization.length);
 
+    const transporter = authClient.transporter;
+    const originalTransporterRequest = transporter.request.bind(transporter);
+    transporter.request = (opts: any, callback?: any) => {
+      if (opts && opts.headers) {
+        try {
+          if (typeof opts.headers.set === 'function') {
+            opts.headers.set('Authorization', authorization);
+          } else {
+            opts.headers.Authorization = authorization;
+          }
+        } catch (err) {
+          // ignore header-set failures
+        }
+      }
+      const logHeaders: any = {};
+      if (opts?.headers) {
+        if (typeof opts.headers.entries === 'function') {
+          for (const [k, v] of opts.headers.entries()) logHeaders[k] = v;
+        } else {
+          Object.assign(logHeaders, opts.headers);
+        }
+      }
+      console.log('[Gmail] TRANSPORTER headers:', JSON.stringify(logHeaders));
+      return originalTransporterRequest(opts, callback);
+    };
+
     authClient.getRequestHeaders = async () => ({ Authorization: authorization });
 
     const originalRequest = authClient.request.bind(authClient);
