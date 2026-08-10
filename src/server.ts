@@ -56,13 +56,11 @@ const allowedOrigins = [
 
 const corsOptions = {
     origin: function (origin: string | undefined, callback: (err: Error | null, allow?: boolean) => void) {
-        if (!origin) return callback(null, true);
-        if (allowedOrigins.indexOf(origin) !== -1) {
-            callback(null, true);
-        } else {
-            console.log('CORS blocked for origin:', origin);
-            callback(new Error('Not allowed by CORS'));
+        if (!origin || allowedOrigins.indexOf(origin) !== -1) {
+            return callback(null, true);
         }
+        console.log('[CORS] Blocked origin:', origin, '| Allowed:', JSON.stringify(allowedOrigins));
+        callback(new Error('Not allowed by CORS'));
     },
     credentials: true,
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
@@ -85,7 +83,13 @@ const corsOptions = {
 
 const io = new Server(server, {
     cors: {
-        origin: allowedOrigins,
+        origin: function (origin: string | undefined, callback: (err: Error | null, allow?: boolean) => void) {
+            if (!origin || allowedOrigins.indexOf(origin) !== -1) {
+                return callback(null, true);
+            }
+            console.log('[SocketIO CORS] Blocked origin:', JSON.stringify(origin));
+            callback(null, false);
+        },
         credentials: true,
         methods: ['GET', 'POST', 'OPTIONS'],
         allowedHeaders: ['Content-Type', 'Authorization']
