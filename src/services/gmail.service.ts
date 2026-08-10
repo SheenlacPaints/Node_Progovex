@@ -36,6 +36,9 @@ export class GmailService {
     const authClient = authService.createClientWithTokens(tokens);
     const authorization = `Bearer ${tokens.access_token}`;
 
+    console.log('[Gmail] getGmailClient - googleapis:', require('googleapis/package.json').version,
+      '| token present:', !!tokens.access_token, '| auth header len:', authorization.length);
+
     authClient.getRequestHeaders = async () => ({ Authorization: authorization });
 
     const originalRequest = authClient.request.bind(authClient);
