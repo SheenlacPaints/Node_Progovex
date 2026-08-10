@@ -259,6 +259,8 @@ const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
     console.log(`Server running on port ${PORT}`);
     console.log(`Environment: ${process.env.NODE_ENV || 'development'}`);
+    console.log(`Gmail FRONTEND_URL: ${process.env.FRONTEND_URL || 'http://localhost:4200'}`);
+    console.log(`Gmail GOOGLE_REDIRECT_URI: ${process.env.GOOGLE_REDIRECT_URI || 'NOT SET'}`);
     console.log(`API URL: http://localhost:${PORT}/node/api`);
     console.log(`Socket.IO server ready on port ${PORT}`);
 });
