@@ -10,7 +10,7 @@ const SESSION_SECRET = process.env.SESSION_SECRET || 'dev-secret-change-in-produ
 const getFrontendUrl = () => (process.env.FRONTEND_URL || 'http://localhost:4200').replace(/\/+$/, '');
 
 const redirectToFrontend = (res: Response, query: string) => {
-  const url = `https://devtaskflow.sheenlac.com/#/user/email?${query}`;
+  const url = `${getFrontendUrl()}/#/user/email?${query}`;
   console.log('[GmailAuth] Redirecting to frontend:', url);
   return res.redirect(url);
 };
