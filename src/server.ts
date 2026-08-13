@@ -30,8 +30,11 @@ import mediaRoutes from './routes/mediaRoutes';
 import { gmailTokenDbService } from './services/gmailTokenDb.service';
 import meetingRoutes from './routes/meeting.routes';
 import meetingUploadRoutes from './routes/meetingUpload.routes';
+import chatRoutes from './routes/chatRoutes';
 import { MeetingDbService } from './services/meetingDb.service';
+import { ChatDbService } from './services/chatDb.service';
 import { registerMeetingSocketHandlers } from './sockets/meetingSocketHandler';
+import { registerChatSocketHandlers } from './sockets/chatSocketHandler';
 
 const app = express();
 app.set('trust proxy', true);
@@ -196,6 +199,7 @@ app.use('/node/api/meetings', apiLimiter, meetingRoutes);
 app.use('/node/api/meetings/upload', apiLimiter, meetingUploadRoutes);
 app.use('/node/api/users', apiLimiter, userRoutes);
 app.use('/node/api/admin', apiLimiter, adminRoutes);
+app.use('/node/api/chats', apiLimiter, chatRoutes);
 app.use('/node/api/s3', apiLimiter, s3Routes);
 // Media routes use lenient rate limiter for image/video streaming
 app.use('/node/api/post/media', mediaLimiter, mediaRoutes);
@@ -253,7 +257,9 @@ app.use(errorHandler);
 connectMongoDB().catch(console.error);
 gmailTokenDbService.ensureTable().catch(console.error);
 MeetingDbService.ensureTables().catch(console.error);
+ChatDbService.ensureTables().catch(console.error);
 registerMeetingSocketHandlers(io);
+registerChatSocketHandlers(io);
 
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {

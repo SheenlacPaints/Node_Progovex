@@ -8,6 +8,16 @@ function toInt(val: any): number | undefined {
     return isNaN(n) ? undefined : n;
 }
 
+function isPastMeeting(meeting: any): boolean {
+    if (!meeting) return true;
+    const now = Date.now();
+    const endTime = meeting.end_time ? new Date(meeting.end_time).getTime() : null;
+    const startTime = meeting.start_time ? new Date(meeting.start_time).getTime() : null;
+    return meeting.status === 'completed' || meeting.status === 'cancelled' ||
+        (endTime !== null && endTime < now) ||
+        (meeting.status === 'scheduled' && startTime !== null && startTime < now);
+}
+
 export class MeetingController {
 
     static async createMeeting(req: AuthRequest, res: Response): Promise<void> {
@@ -66,6 +76,8 @@ export class MeetingController {
             const meeting = await MeetingDbService.getMeetingByCode(req.params.code);
             if (!meeting) { res.status(404).json({ success: false, message: 'Meeting not found' }); return; }
 
+            meeting.is_past = isPastMeeting(meeting);
+
             const participants = await MeetingDbService.getActiveParticipants(meeting.id);
             const waitingRoom = await MeetingDbService.getWaitingRoom(meeting.id);
 
@@ -86,8 +98,8 @@ export class MeetingController {
             const meeting = await MeetingDbService.getMeetingByCode(req.params.code);
             if (!meeting) { res.status(404).json({ success: false, message: 'Meeting not found' }); return; }
 
-            if (meeting.status === 'completed' || meeting.status === 'cancelled') {
-                res.status(400).json({ success: false, message: 'Meeting has ended' }); return;
+            if (isPastMeeting(meeting)) {
+                res.status(400).json({ success: false, message: 'This meeting has ended and can no longer be joined' }); return;
             }
 
             if (meeting.meeting_password && meeting.meeting_password !== req.body.password) {

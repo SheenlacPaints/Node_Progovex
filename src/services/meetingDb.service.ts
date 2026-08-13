@@ -310,7 +310,11 @@ export class MeetingDbService {
 
     static async getMeetingByCode(code: string): Promise<any> {
         const results = await executeQuery<any>(
-            `SELECT m.*, u.cuser_name as host_name, u.cemail as host_email
+            `SELECT m.*, u.cuser_name as host_name, u.cemail as host_email,
+                CASE WHEN m.status IN ('completed', 'cancelled')
+                    OR (m.end_time IS NOT NULL AND m.end_time < GETUTCDATE())
+                    OR (m.status = 'scheduled' AND m.start_time IS NOT NULL AND m.start_time < GETUTCDATE())
+                    THEN 1 ELSE 0 END as is_past
              FROM nt_meetings m
              LEFT JOIN users u ON m.host_user_id = u.id
              WHERE m.meeting_code = @code`,
@@ -494,7 +498,11 @@ export class MeetingDbService {
     static async getUserMeetings(userId: number): Promise<any[]> {
         return await executeQuery<any>(
             `SELECT m.*, u.cuser_name as host_name,
-                (SELECT COUNT(*) FROM nt_meeting_participants WHERE meeting_id = m.id AND status = 'joined') as participant_count
+                (SELECT COUNT(*) FROM nt_meeting_participants WHERE meeting_id = m.id AND status = 'joined') as participant_count,
+                CASE WHEN m.status IN ('completed', 'cancelled')
+                    OR (m.end_time IS NOT NULL AND m.end_time < GETUTCDATE())
+                    OR (m.status = 'scheduled' AND m.start_time IS NOT NULL AND m.start_time < GETUTCDATE())
+                    THEN 1 ELSE 0 END as is_past
              FROM nt_meetings m
              LEFT JOIN users u ON m.host_user_id = u.id
              WHERE m.host_user_id = @uid
@@ -582,6 +590,8 @@ export class MeetingDbService {
                 OR m.id IN (SELECT meeting_id FROM nt_meeting_participants WHERE user_id = @uid)
                 OR m.id IN (SELECT meeting_id FROM nt_meeting_invitations WHERE user_id = @uid))
                 AND m.status IN ('scheduled', 'active')
+                AND NOT (m.end_time IS NOT NULL AND m.end_time < GETUTCDATE())
+                AND NOT (m.status = 'scheduled' AND m.start_time IS NOT NULL AND m.start_time < GETUTCDATE())
              ORDER BY m.start_time ASC`,
             { uid: userId }
         );
@@ -687,6 +697,8 @@ export class MeetingDbService {
              INNER JOIN nt_meetings m ON inv.meeting_id = m.id
              LEFT JOIN users u ON m.host_user_id = u.id
              WHERE inv.user_id = @uid AND m.status IN ('scheduled', 'active')
+                AND NOT (m.end_time IS NOT NULL AND m.end_time < GETUTCDATE())
+                AND NOT (m.status = 'scheduled' AND m.start_time IS NOT NULL AND m.start_time < GETUTCDATE())
                 AND m.id NOT IN (SELECT meeting_id FROM nt_meeting_participants WHERE user_id = @uid)
              ORDER BY m.start_time ASC`,
             { uid: userId }
