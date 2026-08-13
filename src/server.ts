@@ -113,7 +113,16 @@ app.use(helmet({
     crossOriginOpenerPolicy: { policy: "unsafe-none" }
 }));
 
-app.use(compression());
+app.use(compression({
+    level: 6, // Balanced compression level
+    threshold: 1024, // Compress responses larger than 1KB
+    filter: (req, res) => {
+        if (req.headers['x-no-compression']) {
+            return false;
+        }
+        return compression.filter(req, res);
+    }
+}));
 app.use(express.json({ limit: '500mb' }));
 app.use(express.urlencoded({ extended: true, limit: '500mb' }));
 app.use(cookieParser());
@@ -185,10 +194,10 @@ io.on('connection', (socket) => {
 });
 
 app.use('/uploads', express.static(path.join(__dirname, '../uploads'), {
-    setHeaders: (res) => {
+    setHeaders: (res, path) => {
+        res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
         res.setHeader('Access-Control-Allow-Origin', frontendUrl);
         res.setHeader('Access-Control-Allow-Credentials', 'true');
-        res.setHeader('Cache-Control', 'public, max-age=31536000');
     }
 }));
 
