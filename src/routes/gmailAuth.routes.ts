@@ -7,6 +7,14 @@ import { GmailAuthenticatedRequest, setGmailUserCookie, clearGmailUserCookie, gm
 const router = Router();
 const SESSION_SECRET = process.env.SESSION_SECRET || 'dev-secret-change-in-production';
 
+const getFrontendUrl = () => (process.env.FRONTEND_URL || 'http://localhost:4200').replace(/\/+$/, '');
+
+const redirectToFrontend = (res: Response, query: string) => {
+  const url = `${getFrontendUrl()}/#/user/email?${query}`;
+  console.log('[GmailAuth] Redirecting to frontend:', url);
+  return res.redirect(url);
+};
+
 router.get('/google', (req, res) => {
   try {
     const userId = req.query.cuserid as string;
@@ -33,8 +41,7 @@ router.get('/google/callback', async (req, res: Response) => {
 
   if (errorParam) {
     console.error('[GmailAuth] OAuth error from Google:', errorParam);
-    const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:4200';
-    return res.redirect(`${frontendUrl}/#/user/email?auth=error&message=${encodeURIComponent(errorParam)}`);
+    return redirectToFrontend(res, `auth=error&message=${encodeURIComponent(errorParam)}`);
   }
 
   if (!code) {
@@ -54,7 +61,8 @@ router.get('/google/callback', async (req, res: Response) => {
   try {
     console.log('[GmailAuth] Exchanging authorization code for tokens...');
     const tokens = await authService.getTokensFromCode(code);
-    console.log('[GmailAuth] Tokens received, fetching user profile...');
+    console.log('[GmailAuth] Tokens received - access_token:', tokens.access_token ? 'present' : 'MISSING', '| refresh_token:', tokens.refresh_token ? 'present' : 'MISSING', '| id_token:', tokens.id_token ? 'present' : 'MISSING', '| scope:', tokens.scope || '');
+    console.log('[GmailAuth] Fetching user profile...');
     const userProfile = await authService.getUserProfile(tokens);
     console.log('[GmailAuth] User:', userProfile.email);
 
@@ -64,13 +72,20 @@ router.get('/google/callback', async (req, res: Response) => {
       setGmailUserCookie(res, userId);
     }
 
-    const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:4200';
-    res.redirect(`${frontendUrl}/#/user/email?auth=success`);
+    redirectToFrontend(res, 'auth=success');
   } catch (error: any) {
     console.error('[GmailAuth] OAuth callback error:', error.message);
-    const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:4200';
-    res.redirect(`${frontendUrl}/#/user/email?auth=error&message=${encodeURIComponent(error.message)}`);
+    redirectToFrontend(res, `auth=error&message=${encodeURIComponent(error.message)}`);
   }
+});
+
+router.get('/debug-env', (req, res) => {
+  res.json({
+    FRONTEND_URL: process.env.FRONTEND_URL || 'http://localhost:4200',
+    GOOGLE_REDIRECT_URI: process.env.GOOGLE_REDIRECT_URI || 'NOT SET',
+    NODE_ENV: process.env.NODE_ENV || 'development',
+    processCwd: process.cwd(),
+  });
 });
 
 router.get('/status', gmailAuthMiddleware, async (req: GmailAuthenticatedRequest, res: Response) => {

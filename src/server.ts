@@ -30,8 +30,11 @@ import mediaRoutes from './routes/mediaRoutes';
 import { gmailTokenDbService } from './services/gmailTokenDb.service';
 import meetingRoutes from './routes/meeting.routes';
 import meetingUploadRoutes from './routes/meetingUpload.routes';
+import chatRoutes from './routes/chatRoutes';
 import { MeetingDbService } from './services/meetingDb.service';
+import { ChatDbService } from './services/chatDb.service';
 import { registerMeetingSocketHandlers } from './sockets/meetingSocketHandler';
+import { registerChatSocketHandlers } from './sockets/chatSocketHandler';
 
 const app = express();
 app.set('trust proxy', true);
@@ -56,13 +59,11 @@ const allowedOrigins = [
 
 const corsOptions = {
     origin: function (origin: string | undefined, callback: (err: Error | null, allow?: boolean) => void) {
-        if (!origin) return callback(null, true);
-        if (allowedOrigins.indexOf(origin) !== -1) {
-            callback(null, true);
-        } else {
-            console.log('CORS blocked for origin:', origin);
-            callback(new Error('Not allowed by CORS'));
+        if (!origin || allowedOrigins.indexOf(origin) !== -1) {
+            return callback(null, true);
         }
+        console.log('[CORS] Blocked origin:', origin, '| Allowed:', JSON.stringify(allowedOrigins));
+        callback(new Error('Not allowed by CORS'));
     },
     credentials: true,
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
@@ -85,7 +86,13 @@ const corsOptions = {
 
 const io = new Server(server, {
     cors: {
-        origin: allowedOrigins,
+        origin: function (origin: string | undefined, callback: (err: Error | null, allow?: boolean) => void) {
+            if (!origin || allowedOrigins.indexOf(origin) !== -1) {
+                return callback(null, true);
+            }
+            console.log('[SocketIO CORS] Blocked origin:', JSON.stringify(origin));
+            callback(null, false);
+        },
         credentials: true,
         methods: ['GET', 'POST', 'OPTIONS'],
         allowedHeaders: ['Content-Type', 'Authorization']
@@ -106,7 +113,16 @@ app.use(helmet({
     crossOriginOpenerPolicy: { policy: "unsafe-none" }
 }));
 
-app.use(compression());
+app.use(compression({
+    level: 6, // Balanced compression level
+    threshold: 1024, // Compress responses larger than 1KB
+    filter: (req, res) => {
+        if (req.headers['x-no-compression']) {
+            return false;
+        }
+        return compression.filter(req, res);
+    }
+}));
 app.use(express.json({ limit: '500mb' }));
 app.use(express.urlencoded({ extended: true, limit: '500mb' }));
 app.use(cookieParser());
@@ -178,10 +194,10 @@ io.on('connection', (socket) => {
 });
 
 app.use('/uploads', express.static(path.join(__dirname, '../uploads'), {
-    setHeaders: (res) => {
+    setHeaders: (res, path) => {
+        res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
         res.setHeader('Access-Control-Allow-Origin', frontendUrl);
         res.setHeader('Access-Control-Allow-Credentials', 'true');
-        res.setHeader('Cache-Control', 'public, max-age=31536000');
     }
 }));
 
@@ -192,6 +208,7 @@ app.use('/node/api/meetings', apiLimiter, meetingRoutes);
 app.use('/node/api/meetings/upload', apiLimiter, meetingUploadRoutes);
 app.use('/node/api/users', apiLimiter, userRoutes);
 app.use('/node/api/admin', apiLimiter, adminRoutes);
+app.use('/node/api/chats', apiLimiter, chatRoutes);
 app.use('/node/api/s3', apiLimiter, s3Routes);
 // Media routes use lenient rate limiter for image/video streaming
 app.use('/node/api/post/media', mediaLimiter, mediaRoutes);
@@ -249,12 +266,16 @@ app.use(errorHandler);
 connectMongoDB().catch(console.error);
 gmailTokenDbService.ensureTable().catch(console.error);
 MeetingDbService.ensureTables().catch(console.error);
+ChatDbService.ensureTables().catch(console.error);
 registerMeetingSocketHandlers(io);
+registerChatSocketHandlers(io);
 
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
     console.log(`Server running on port ${PORT}`);
     console.log(`Environment: ${process.env.NODE_ENV || 'development'}`);
+    console.log(`Gmail FRONTEND_URL: ${process.env.FRONTEND_URL || 'http://localhost:4200'}`);
+    console.log(`Gmail GOOGLE_REDIRECT_URI: ${process.env.GOOGLE_REDIRECT_URI || 'NOT SET'}`);
     console.log(`API URL: http://localhost:${PORT}/node/api`);
     console.log(`Socket.IO server ready on port ${PORT}`);
 });

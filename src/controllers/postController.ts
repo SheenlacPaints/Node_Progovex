@@ -359,42 +359,16 @@ export const createPost = async (req: AuthRequest, res: Response) => {
     }
 };
 
-const convertToProxyUrl = (mediaUrl: string): string => {
-    if (!mediaUrl) return mediaUrl;
-
-    // If it's already a proxy URL, return as is
-    if (mediaUrl.includes('/post/media/stream') || mediaUrl.includes('/media/stream')) {
-        return mediaUrl;
-    }
-
-    // If it's an S3 URL, convert to proxy URL
-    if (mediaUrl.includes('s3.amazonaws.com') || mediaUrl.includes('amazonaws.com')) {
-        try {
-            const key = mediaUrl.split('.amazonaws.com/')[1];
-            if (key) {
-                // ✅ Return relative URL that goes through backend media endpoint
-                return `/node/api/post/media/stream?key=${encodeURIComponent(key)}`;
-            }
-        } catch (error) {
-            console.error('Error converting to proxy URL:', error);
-            return mediaUrl;
-        }
-    }
-    return mediaUrl;
-};
-
-// In postController.ts
-
 export const getPosts = async (req: AuthRequest, res: Response) => {
     try {
         const page = parseInt(req.query.page as string) || 1;
-        const limit = parseInt(req.query.limit as string) || 20;
+        const limit = Math.min(parseInt(req.query.limit as string) || 10, 50); // Max 50 per page
         const offset = (page - 1) * limit;
         const userId = Number(req.user.id);
 
         const search = req.query.search as string || '';
         const filterType = req.query.filterType as string || 'all';
-        const sortByType = req.query.sortBy as string || '';
+        const sortByType = req.query.sortBy as string || 'latest';
 
         let whereConditions: string[] = [
             "p.status = 'approved'",
@@ -412,63 +386,55 @@ export const getPosts = async (req: AuthRequest, res: Response) => {
             )`);
             params.searchPattern = searchPattern;
         }
-        var orderBy = "desc";
-        if ((filterType === 'all') && (sortByType == "latest")) {
-            orderBy = "p.approved_at desc";
-        }else if ((filterType === 'all') && (sortByType == "oldest")) {
-            orderBy = "p.approved_at asc";
-        }
-        else if ((filterType === 'all') && (sortByType == "most-liked")) {
-            orderBy = "p.likes_count desc";
-        }
-        else if ((filterType === 'all') && (sortByType == "most-commented")) {
-            orderBy = "p.comments_count desc";
-        }
-        else if ((filterType === 'my-posts') && (sortByType == "latest")) {
+
+        // Build ORDER BY clause
+        let orderBy = "p.approved_at DESC";
+        if (filterType === 'my-posts') {
             whereConditions.push(`p.cuserid = @userId`);
-            orderBy = "p.approved_at desc";
-        }else if ((filterType === 'my-posts') && (sortByType == "oldest")) {
-            whereConditions.push(`p.cuserid = @userId`);
-            orderBy = "p.approved_at asc";
+        } else if (filterType === 'saved') {
+            whereConditions.push(`p.id IN ( SELECT post_id FROM nt_saved_posts WHERE cuserid = @userId )`);
         }
-        else if ((filterType === 'my-posts') && (sortByType == "most-liked")) {
-            whereConditions.push(`p.cuserid = @userId`);
-            orderBy = "p.likes_count desc";
-        }
-        else if ((filterType === 'my-posts') && (sortByType == "most-commented")) {
-            whereConditions.push(`p.cuserid = @userId`);
-            orderBy = "p.comments_count desc";
-        }
-        else if((filterType === 'saved') && (sortByType == "latest")){
-            whereConditions.push(`p.id IN ( SELECT post_id FROM nt_saved_posts WHERE cuserid = @userId )`);
-            orderBy = "p.approved_at desc";
-        }else if((filterType === 'saved') && (sortByType == "oldest")){
-            whereConditions.push(`p.id IN ( SELECT post_id FROM nt_saved_posts WHERE cuserid = @userId )`);
-            orderBy = "p.approved_at asc";
-        }        
-        else if((filterType === 'saved') && (sortByType == "most-liked")){
-            whereConditions.push(`p.id IN ( SELECT post_id FROM nt_saved_posts WHERE cuserid = @userId )`);
-            orderBy = "p.likes_count desc";
-        }        
-        else if((filterType === 'saved') && (sortByType == "most-commented")){
-            whereConditions.push(`p.id IN ( SELECT post_id FROM nt_saved_posts WHERE cuserid = @userId )`);
-            orderBy = "p.comments_count desc";
+
+        // Sort order
+        switch (sortByType) {
+            case 'oldest':
+                orderBy = "p.approved_at ASC";
+                break;
+            case 'most-liked':
+                orderBy = "p.likes_count DESC";
+                break;
+            case 'most-commented':
+                orderBy = "p.comments_count DESC";
+                break;
+            default:
+                orderBy = "p.approved_at DESC";
         }
 
         const whereClause = whereConditions.join(' AND ');
 
-        // ✅ Updated query to include original post data
+        // Simplified query - only select necessary fields
         const query = `
-            SELECT p.*,
-                FORMAT(p.created_at, 'yyyy-MM-dd HH:mm:ss') as created_at,
-                FORMAT(p.approved_at, 'yyyy-MM-dd HH:mm:ss') as approved_at,
+            SELECT 
+                p.id,
+                p.content,
+                p.type,
+                p.media_urls,
+                p.poll_data,
+                p.hashtags,
+                p.likes_count,
+                p.comments_count,
+                p.shares_count,
+                p.created_at,
+                p.approved_at,
+                p.cuserid as user_id,
+                p.is_reshare,
+                p.original_post_id,
                 u.cuser_name as username,
                 u.cuser_name as full_name,
                 u.cprofile_image_name as avatar_url,
-                FORMAT(p.created_at, 'yyyy-MM-dd HH:mm:ss') as created_at_formatted,
                 (SELECT COUNT(*) FROM nt_reactions WHERE post_id = p.id AND cuserid = @userId) as user_liked,
                 (SELECT COUNT(*) FROM nt_saved_posts WHERE post_id = p.id AND cuserid = @userId) as user_saved,
-                -- Original post data for reshared posts
+                -- Original post data
                 op.id as original_id,
                 op.content as original_content,
                 op.type as original_type,
@@ -478,7 +444,6 @@ export const getPosts = async (req: AuthRequest, res: Response) => {
                 op.likes_count as original_likes_count,
                 op.comments_count as original_comments_count,
                 op.shares_count as original_shares_count,
-                FORMAT(p.created_at, 'yyyy-MM-dd HH:mm:ss') as original_created_at,
                 op.approved_at as original_approved_at,
                 op.cuserid as original_user_id,
                 ou.cuser_name as original_username,
@@ -494,28 +459,18 @@ export const getPosts = async (req: AuthRequest, res: Response) => {
             OFFSET @offset ROWS FETCH NEXT @limit ROWS ONLY
         `;
 
-        const queryParams = {
-            ...params,
-            offset,
-            limit
-        };
-
+        const queryParams = { ...params, offset, limit };
         const posts = await executeQuery<any>(query, queryParams);
 
-        // Process posts with media (convert to proxy URLs)
+        // Process posts
         const postsWithMedia = posts.map(post => {
-            if(post.created_at.length){
-                post.created_at = post.created_at[1];
-                post.approved_at = post.approved_at[1];
-            }
-            // Parse and convert media URLs
+            // Parse media URLs
             let mediaUrls = [];
             if (post.media_urls) {
                 try {
                     const parsedUrls = typeof post.media_urls === 'string'
                         ? JSON.parse(post.media_urls)
                         : post.media_urls;
-
                     if (Array.isArray(parsedUrls)) {
                         mediaUrls = parsedUrls.map(url => convertToProxyUrl(url));
                     }
@@ -524,25 +479,17 @@ export const getPosts = async (req: AuthRequest, res: Response) => {
                 }
             }
 
-            // Separate images and videos
-            const imageUrls = mediaUrls.filter((url: string) =>
-                url.match(/\.(jpg|jpeg|png|gif|webp|bmp|svg)$/i)
-            );
-            const videoUrls = mediaUrls.filter((url: string) =>
-                url.match(/\.(mp4|webm|avi|mov|mkv|flv)$/i)
-            );
-
-            // ✅ Process original post data for reshared posts
+            // Process original post data
             let originalPostData = null;
             if (post.original_id) {
                 let originalMediaUrls = [];
                 if (post.original_media_urls) {
                     try {
-                        const parsedOriginalUrls = typeof post.original_media_urls === 'string'
+                        const parsed = typeof post.original_media_urls === 'string'
                             ? JSON.parse(post.original_media_urls)
                             : post.original_media_urls;
-                        if (Array.isArray(parsedOriginalUrls)) {
-                            originalMediaUrls = parsedOriginalUrls.map(url => convertToProxyUrl(url));
+                        if (Array.isArray(parsed)) {
+                            originalMediaUrls = parsed.map(url => convertToProxyUrl(url));
                         }
                     } catch {
                         originalMediaUrls = [];
@@ -585,9 +532,7 @@ export const getPosts = async (req: AuthRequest, res: Response) => {
                     likes_count: post.original_likes_count || 0,
                     comments_count: post.original_comments_count || 0,
                     shares_count: post.original_shares_count || 0,
-                    created_at: post.original_created_at,
                     approved_at: post.original_approved_at,
-                    display_date: post.original_approved_at || post.original_created_at,
                     userVotedOption: post.original_user_voted_option || null
                 };
             }
@@ -595,23 +540,19 @@ export const getPosts = async (req: AuthRequest, res: Response) => {
             return {
                 ...post,
                 mediaUrls: mediaUrls,
-                imageUrls: imageUrls,
-                videoUrls: videoUrls,
-                media_urls: JSON.stringify(mediaUrls),
                 userLiked: post.user_liked === 1 || post.user_liked === true,
                 user_saved: post.user_saved === 1 || post.user_saved === true,
-                originalPost: originalPostData // ✅ Include original post data
+                originalPost: originalPostData
             };
         });
 
-        // Count total
+        // Count total with index optimization
         const countQuery = `
             SELECT COUNT(DISTINCT p.id) as total
             FROM nt_posts p
             JOIN users u ON p.cuserid = u.cuserid
             WHERE ${whereClause}
         `;
-
         const countResult = await executeQuery<any>(countQuery, params);
         const total = countResult[0]?.total || 0;
 
@@ -621,7 +562,8 @@ export const getPosts = async (req: AuthRequest, res: Response) => {
             page,
             limit,
             total: total,
-            totalPages: Math.ceil(total / limit)
+            totalPages: Math.ceil(total / limit),
+            hasMore: page * limit < total
         });
 
     } catch (error) {
@@ -633,6 +575,17 @@ export const getPosts = async (req: AuthRequest, res: Response) => {
         });
     }
 };
+
+// Helper function to convert S3 URLs to proxy URLs
+function convertToProxyUrl(url: string): string {
+    if (!url) return url;
+    // If it's an S3 URL, convert to proxy URL
+    if (url.includes('s3.amazonaws.com') || url.includes('amazonaws.com')) {
+        const key = url.split('/').pop();
+        return `/node/api/post/media/stream?key=${encodeURIComponent(key)}`;
+    }
+    return url;
+}
 
 export const getPost = async (req: AuthRequest, res: Response) => {
     try {
@@ -711,13 +664,13 @@ export const deletePost = async (req: AuthRequest, res: Response) => {
     const userId = req.user!.id;
     const userRole = req.user!.role;
 
-    console.log(userRole,"userRole");
-    console.log(userId,"userId");
-    console.log(id,"id");
+    console.log(userRole, "userRole");
+    console.log(userId, "userId");
+    console.log(id, "id");
     //let query = 'DELETE FROM nt_posts WHERE id = @postId AND cuserid = @userId';
     let query = "UPDATE nt_posts SET status = 'deleted', original_post_id = NULL WHERE id = @postId AND cuserid = @userId";
     let params: any = { postId: parseInt(id), userId };
-    console.log(query,"query");
+    console.log(query, "query");
     if (userRole === 'admin') {
         // query = 'DELETE FROM nt_posts WHERE id = @postId';
         query = "UPDATE nt_posts SET status = 'deleted' WHERE id = @postId";
@@ -837,7 +790,7 @@ export const addComment = async (req: AuthRequest, res: Response) => {
         // Update post comments count
         await executeNonQuery(
             'UPDATE nt_posts SET comments_count = @comments_count WHERE id = @postId',
-            { postId: parseInt(postId), comments_count:parseInt(commentCounts) }
+            { postId: parseInt(postId), comments_count: parseInt(commentCounts) }
         );
 
         // Get updated count
@@ -857,10 +810,10 @@ export const addComment = async (req: AuthRequest, res: Response) => {
         );
 
         const userDetails = await executeQuery<any>(
-        `SELECT u.cfirst_name, u.clast_name
+            `SELECT u.cfirst_name, u.clast_name
         FROM users u
         WHERE u.cuserid = @userId`,
-        { userId: userId }
+            { userId: userId }
         );
 
         const commentInfo = commentDetails[0];
@@ -874,10 +827,10 @@ export const addComment = async (req: AuthRequest, res: Response) => {
                 `INSERT INTO nt_notifications (cuserid, from_user_id, type, reference_id, reference_type, content, created_at)
                 VALUES (@userId, @fromUserId, 'commented', @referenceId, 'post', @content, GETDATE())`,
                 {
-                userId: commentInfo.cuserid,
-                fromUserId: userId,
-                referenceId: parseInt(postId),
-                content: notificationContent
+                    userId: commentInfo.cuserid,
+                    fromUserId: userId,
+                    referenceId: parseInt(postId),
+                    content: notificationContent
                 }
             );
 
@@ -990,9 +943,9 @@ export const addReaction = async (req: AuthRequest, res: Response) => {
                     `DELETE FROM nt_notifications
                     WHERE cuserid = @userId AND from_user_id = @fromUserId AND type = 'liked' AND reference_id = @referenceId AND reference_type = 'like'`,
                     {
-                    userId: like.cuserid,
-                    fromUserId: userId,
-                    referenceId: parseInt(postId),
+                        userId: like.cuserid,
+                        fromUserId: userId,
+                        referenceId: parseInt(postId),
                     }
                 );
             }
@@ -1015,10 +968,10 @@ export const addReaction = async (req: AuthRequest, res: Response) => {
                     `INSERT INTO nt_notifications (cuserid, from_user_id, type, reference_id, reference_type, content, created_at)
                     VALUES (@userId, @fromUserId, 'liked', @referenceId, 'like', @content, GETDATE())`,
                     {
-                    userId: like.cuserid,
-                    fromUserId: userId,
-                    referenceId: parseInt(postId),
-                    content: notificationContent
+                        userId: like.cuserid,
+                        fromUserId: userId,
+                        referenceId: parseInt(postId),
+                        content: notificationContent
                     }
                 );
 
@@ -1431,29 +1384,29 @@ export const reportPost = async (req: AuthRequest, res: Response) => {
     );
 
     const reportDetails = await executeQuery<any>(
-      `SELECT p.id, p.cuserid, u.cuser_name as username
+        `SELECT p.id, p.cuserid, u.cuser_name as username
        FROM nt_posts p
        JOIN users u ON p.cuserid = u.cuserid
        WHERE p.id = @postId`,
-      { postId: parseInt(id) }
+        { postId: parseInt(id) }
     );
 
     const userDetails = await executeQuery<any>(
-      `SELECT u.cfirst_name, u.clast_name
+        `SELECT u.cfirst_name, u.clast_name
        FROM users u
        WHERE u.cuserid = @userId`,
-      { userId: userId }
+        { userId: userId }
     );
 
     const report = reportDetails[0];
 
     if (report?.cuserid) {
-      const notificationContent = reportRemarks
-        ? `Your post was reported by ${userDetails[0]?.cfirst_name || 'Someone'}. Remarks: ${reportRemarks}`
-        : 'Your post was reported.';
+        const notificationContent = reportRemarks
+            ? `Your post was reported by ${userDetails[0]?.cfirst_name || 'Someone'}. Remarks: ${reportRemarks}`
+            : 'Your post was reported.';
 
-      await executeNonQuery(
-        `INSERT INTO nt_notifications (cuserid, from_user_id, type, reference_id, reference_type, content, created_at)
+        await executeNonQuery(
+            `INSERT INTO nt_notifications (cuserid, from_user_id, type, reference_id, reference_type, content, created_at)
          VALUES (@userId, @fromUserId, 'reported', @referenceId, 'post', @content, GETDATE())`,
         {
           userId: report.cuserid,

@@ -1,6 +1,7 @@
 import { google } from 'googleapis';
 
 const SCOPES = [
+  'openid',
   'https://www.googleapis.com/auth/gmail.modify',
   'https://www.googleapis.com/auth/gmail.compose',
   'https://www.googleapis.com/auth/gmail.labels',
@@ -14,6 +15,7 @@ export interface OAuthTokens {
   scope: string;
   token_type: string;
   expiry_date: number;
+  id_token?: string;
 }
 
 export interface UserProfile {
@@ -60,14 +62,41 @@ export class AuthService {
   }
 
   async getTokensFromCode(code: string): Promise<OAuthTokens> {
-    const client = this.getClient();
+    const client = new google.auth.OAuth2(
+      process.env.GOOGLE_CLIENT_ID,
+      process.env.GOOGLE_CLIENT_SECRET,
+      process.env.GOOGLE_REDIRECT_URI
+    );
     const { tokens } = await client.getToken(code);
     return tokens as OAuthTokens;
   }
 
+  private getProfileFromIdToken(tokens: OAuthTokens): UserProfile | null {
+    if (!tokens.id_token) return null;
+    try {
+      const payload = JSON.parse(
+        Buffer.from(tokens.id_token.split('.')[1], 'base64url').toString('utf-8')
+      );
+      if (payload && payload.email) {
+        return {
+          email: payload.email || '',
+          name: payload.name || '',
+          picture: payload.picture || '',
+          id: payload.sub || '',
+        };
+      }
+    } catch {
+      // Invalid id_token; fall through to the userinfo API
+    }
+    return null;
+  }
+
   async getUserProfile(tokens: OAuthTokens): Promise<UserProfile> {
-    const client = this.getClient();
-    client.setCredentials(tokens);
+    const fromIdToken = this.getProfileFromIdToken(tokens);
+    if (fromIdToken) {
+      return fromIdToken;
+    }
+    const client = this.createClientWithTokens(tokens);
     const oauth2 = google.oauth2({ version: 'v2', auth: client } as any);
     const { data } = await oauth2.userinfo.get();
     return {

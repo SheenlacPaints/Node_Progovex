@@ -16,8 +16,11 @@ export async function gmailTokenRefreshMiddleware(
     const now = Date.now();
     const expiryDate = req.tokens.expiry_date || 0;
     const buffer = 5 * 60 * 1000;
+    const shouldRefresh = now >= expiryDate - buffer;
 
-    if (now >= expiryDate - buffer) {
+    console.log('[GmailTokenRefresh] expiry:', expiryDate, '| now:', now, '| shouldRefresh:', shouldRefresh);
+
+    if (shouldRefresh) {
       const refreshedTokens = await authService.refreshAccessToken(req.tokens);
       req.tokens = refreshedTokens;
 

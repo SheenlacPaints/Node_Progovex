@@ -14,6 +14,10 @@ router.get('/messages', async (req: GmailAuthenticatedRequest, res: Response) =>
   try {
     const { label, pageToken, maxResults, q } = req.query;
     const count = maxResults ? parseInt(maxResults as string) : 50;
+    console.log('[Gmail] List messages - access_token present:', !!req.tokens?.access_token,
+      '| len:', req.tokens?.access_token?.length,
+      '| refresh_token present:', !!req.tokens?.refresh_token,
+      '| expiry:', req.tokens?.expiry_date, '| now:', Date.now());
     const result = await gmailService.listMessages(req.tokens!, {
       label: label as string,
       pageToken: pageToken as string,
