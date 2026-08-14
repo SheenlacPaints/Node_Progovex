@@ -1,6 +1,7 @@
 import { Request, Response } from 'express';
 import { AuthRequest } from '../middleware/auth';
 import { MeetingDbService } from '../services/meetingDb.service';
+import { sendMeetingInviteEmail, formatMeetingDateTime } from '../services/mail.service';
 
 function toInt(val: any): number | undefined {
     if (val === undefined || val === null) return undefined;
@@ -19,6 +20,42 @@ function isPastMeeting(meeting: any): boolean {
 }
 
 export class MeetingController {
+
+    /**
+     * Send a Gmail-Meet-style invite email to each recipient.
+     * Emails are only delivered when SMTP is configured and EMAIL_ENABLED=true.
+     */
+    private static async sendInviteEmails(req: AuthRequest, meeting: any, emails: string[]): Promise<number> {
+        const unique = [...new Set((emails || []).map((e: string) => String(e).trim()).filter(Boolean))];
+        if (unique.length === 0) return 0;
+
+        const users = await MeetingDbService.getUsersByEmails(unique);
+        const nameByEmail = new Map<string, string>();
+        for (const u of users) {
+            const key = String(u?.cemail || '').trim().toLowerCase();
+            if (key) nameByEmail.set(key, u.cuser_name);
+        }
+
+        const hostName = meeting.host_name || req.user?.fullName || req.user?.username || 'Host';
+        const inviteLink = `${process.env.FRONTEND_URL || process.env.CLIENT_URL || 'http://localhost:4200'}/meeting/join/${meeting.meeting_code}`;
+
+        let sent = 0;
+        for (const email of unique) {
+            const result = await sendMeetingInviteEmail({
+                to: email,
+                toName: nameByEmail.get(email.toLowerCase()),
+                title: meeting.title,
+                hostName,
+                dateTimeLabel: formatMeetingDateTime(meeting.start_time),
+                meetingCode: meeting.meeting_code,
+                meetingPassword: meeting.meeting_password,
+                inviteLink,
+                description: meeting.description
+            });
+            if (result.success && !result.skipped) sent++;
+        }
+        return sent;
+    }
 
     static async createMeeting(req: AuthRequest, res: Response): Promise<void> {
         try {
@@ -54,6 +91,22 @@ export class MeetingController {
             if (Array.isArray(participantIds) && participantIds.length > 0) {
                 await MeetingDbService.addParticipants(meeting.id, participantIds);
                 await MeetingDbService.logMeeting(meeting.id, userId, 'participants_added', participantIds.join(','));
+            }
+
+            const participantEmails: string[] = [];
+            if (Array.isArray(req.body.participant_emails)) {
+                for (const email of req.body.participant_emails) {
+                    const e = String(email || '').trim();
+                    if (!e) continue;
+                    try {
+                        await MeetingDbService.inviteUser(meeting.id, e, userId);
+                        participantEmails.push(e);
+                    } catch (err) { /* skip duplicates */ }
+                }
+            }
+
+            if (participantEmails.length > 0) {
+                await this.sendInviteEmails(req, meeting, participantEmails);
             }
 
             const inviteLink = `${process.env.FRONTEND_URL || process.env.CLIENT_URL || 'http://localhost:4200'}/meeting/join/${meeting.meeting_code}`;
@@ -317,6 +370,8 @@ export class MeetingController {
             await MeetingDbService.inviteUser(meeting.id, email, userId);
             await MeetingDbService.logMeeting(meeting.id, userId, 'invited', email);
 
+            await this.sendInviteEmails(req, meeting, [email]);
+
             res.json({ success: true, message: 'Invitation sent' });
         } catch (error: any) {
             res.status(500).json({ success: false, message: error.message });
@@ -335,17 +390,23 @@ export class MeetingController {
             }
 
             let invited = 0;
+            const invitedEmails: string[] = [];
             for (const email of emails) {
+                const e = String(email || '').trim();
+                if (!e) continue;
                 try {
-                    await MeetingDbService.inviteUser(meeting.id, email, userId);
+                    await MeetingDbService.inviteUser(meeting.id, e, userId);
                     invited++;
-                } catch (e) { /* skip duplicates */ }
+                    invitedEmails.push(e);
+                } catch (err) { /* skip duplicates */ }
             }
 
             await MeetingDbService.logMeeting(meeting.id, userId, 'invited_bulk', emails.join(','));
+
+            const mailSent = await this.sendInviteEmails(req, meeting, invitedEmails);
             const inviteLink = `${process.env.FRONTEND_URL || process.env.CLIENT_URL || 'http://localhost:4200'}/meeting/join/${meeting.meeting_code}`;
 
-            res.json({ success: true, invited, invite_link: inviteLink });
+            res.json({ success: true, invited, mails_sent: mailSent, invite_link: inviteLink });
         } catch (error: any) {
             res.status(500).json({ success: false, message: error.message });
         }
@@ -379,10 +440,37 @@ export class MeetingController {
                 duration_minutes: req.body.duration_minutes
             });
 
-            if (req.body.participants && Array.isArray(req.body.participants)) {
-                for (const email of req.body.participants) {
-                    await MeetingDbService.inviteUser(meeting.id, email, userId);
+            const inviteEmails: string[] = [];
+
+            if (req.body.participant_ids && Array.isArray(req.body.participant_ids)) {
+                const ids = req.body.participant_ids
+                    .map((x: any) => toInt(x))
+                    .filter((n: any): n is number => !!n);
+                if (ids.length > 0) {
+                    await MeetingDbService.addParticipants(meeting.id, ids);
+                    const invitedUsers = await MeetingDbService.getUsersByIds(ids);
+                    for (const u of invitedUsers) {
+                        if (u.cemail) inviteEmails.push(u.cemail);
+                    }
+                    await MeetingDbService.logMeeting(meeting.id, userId, 'participants_added', ids.join(','));
                 }
+            }
+
+            const emailSources: string[] = [
+                ...(Array.isArray(req.body.participant_emails) ? req.body.participant_emails : []),
+                ...(Array.isArray(req.body.participants) ? req.body.participants : [])
+            ];
+            for (const raw of emailSources) {
+                const e = String(raw || '').trim();
+                if (!e) continue;
+                try {
+                    await MeetingDbService.inviteUser(meeting.id, e, userId);
+                    inviteEmails.push(e);
+                } catch (err) { /* skip duplicates */ }
+            }
+
+            if (inviteEmails.length > 0) {
+                await this.sendInviteEmails(req, meeting, inviteEmails);
             }
 
             await MeetingDbService.logMeeting(meeting.id, userId, 'scheduled');

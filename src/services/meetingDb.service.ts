@@ -517,10 +517,34 @@ export class MeetingDbService {
 
     static async searchUsers(query: string): Promise<any[]> {
         return await executeQuery<any>(
-            `SELECT TOP 20 id, cuser_name, cemail, cprofile_image_name FROM users
-             WHERE (cuser_name LIKE @q OR cemail LIKE @q)
+            `SELECT TOP 20 id, cuserid, cuser_name, cemail, cprofile_image_name FROM users
+             WHERE (cuser_name LIKE @q OR cemail LIKE @q OR CAST(cuserid AS VARCHAR(30)) LIKE @q)
              ORDER BY cuser_name ASC`,
             { q: `%${query}%` }
+        );
+    }
+
+    static async getUsersByIds(ids: number[]): Promise<any[]> {
+        const valid = (ids || []).map(toInt).filter((n): n is number => !!n);
+        if (valid.length === 0) return [];
+        const placeholders = valid.map((_, i) => `@id${i}`).join(',');
+        const params: Record<string, number> = {};
+        valid.forEach((v, i) => { params[`id${i}`] = v; });
+        return await executeQuery<any>(
+            `SELECT id, cuserid, cuser_name, cemail, cprofile_image_name FROM users WHERE id IN (${placeholders})`,
+            params
+        );
+    }
+
+    static async getUsersByEmails(emails: string[]): Promise<any[]> {
+        const valid = (emails || []).map(e => String(e).trim()).filter(Boolean);
+        if (valid.length === 0) return [];
+        const placeholders = valid.map((_, i) => `@em${i}`).join(',');
+        const params: Record<string, string> = {};
+        valid.forEach((v, i) => { params[`em${i}`] = v; });
+        return await executeQuery<any>(
+            `SELECT id, cuserid, cuser_name, cemail, cprofile_image_name FROM users WHERE cemail IN (${placeholders})`,
+            params
         );
     }
 
