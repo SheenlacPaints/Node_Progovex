@@ -24,7 +24,9 @@ import {
   assignModerator,
   getSystemHealth,
   getPostStats,
-  getAllPostsForAdmin
+  getAllPostsForAdmin,
+  getNewPostNotifications,
+  markNotificationRead,
 } from '../controllers/adminController';
 import { authenticateToken, authorizeAdmin, authorizeModerator } from '../middleware/auth';
 import { strictLimiter } from '../middleware/rateLimiter';
@@ -71,5 +73,8 @@ router.get('/health', getSystemHealth);
 
 // Announcements
 router.post('/announcements', authorizeAdmin, sendAnnouncement);
+
+router.get('/notifications', authorizeAdmin, getNewPostNotifications);
+router.put('/notifications/:id/read', authenticateToken, markNotificationRead);
 
 export default router;

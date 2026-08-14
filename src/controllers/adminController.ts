@@ -4,6 +4,7 @@ import { AppError } from '../middleware/errorHandler';
 import { AuthRequest } from '../middleware/auth';
 import { sendEmail } from '../workers/emailWorker';
 import sql from 'mssql';
+import { FirebaseTokenService } from '../config/firebaseAuth';
 
 const convertToProxyUrl = (mediaUrl: string): string => {
   if (!mediaUrl) return mediaUrl;
@@ -1018,4 +1019,124 @@ export const reportList = async (req: AuthRequest, res: Response) => {
         { postId: parseInt(id) }
     );
     res.json({ success: true, reactions });
+};
+
+export const getNewPostNotifications = async (req: AuthRequest, res: Response) => {
+    try {
+      console.log("Fetching new post notifications");
+        const userId = req.user!.id;
+        const page = parseInt(req.query.page as string) || 1;
+        const limit = parseInt(req.query.limit as string) || 20;
+        const offset = (page - 1) * limit;
+
+        console.log('📥 Fetching notifications for user:', userId);
+        console.log('📊 Page:', page, 'Limit:', limit, 'Offset:', offset);
+
+        // Get notifications with pagination
+        const notifications = await executeQuery<any>(
+            `SELECT 
+                id, 
+                cuserid, 
+                from_user_id, 
+                type, 
+                reference_id, 
+                reference_type, 
+                content, 
+                is_read,
+                FORMAT(created_at, 'yyyy-MM-dd HH:mm:ss') as created_at
+             FROM nt_notifications 
+             WHERE type in ('new_post','reported')
+             ORDER BY created_at DESC
+             OFFSET @offset ROWS FETCH NEXT @limit ROWS ONLY`,
+            { offset, limit }
+        );
+
+        console.log("notifications",notifications);
+
+        // Get unread count
+        const unreadResult = await executeQuery<any>(
+            `SELECT COUNT(*) as count 
+             FROM nt_notifications 
+             WHERE type = @type AND is_read = 0`,
+            { type: 'new_post' }
+        );
+
+        const unreadCount = unreadResult[0]?.count || 0;
+        console.log('📊 Notifications found:', notifications.length);
+        console.log('📊 Unread count:', unreadCount);
+
+        // Format notifications with user data
+        const formattedNotifications = [];
+        for (const notif of notifications) {
+            let fromUser = null;
+            if (notif.from_user_id) {
+                const userResult = await executeQuery<any>(
+                    'SELECT cuser_name, cfirst_name, cprofile_image_name as avatar_url FROM users WHERE cuserid = @userId',
+                    { userId: notif.from_user_id }
+                );
+                const userData = userResult[0];
+                if (userData) {
+                    fromUser = {
+                        username: userData.cuser_name,
+                        fullName: userData.cfirst_name,
+                        avatarUrl: userData.avatar_url
+                    };
+                }
+            }
+
+            formattedNotifications.push({
+                id: notif.id,
+                userId: notif.cuserid,
+                fromUserId: notif.from_user_id,
+                type: notif.type,
+                referenceId: notif.reference_id,
+                referenceType: notif.reference_type || 'new_post',
+                content: notif.content || "New post notification",
+                isRead: notif.is_read,
+                createdAt: notif.created_at,
+                fromUser: fromUser
+            });
+        }
+
+        res.json({
+            success: true,
+            notifications: formattedNotifications,
+            unreadCount: unreadCount,
+            page,
+            limit
+        });
+    } catch (error) {
+        console.error('Error in getNotifications:', error);
+        res.json({
+            success: true,
+            notifications: [],
+            unreadCount: 0,
+            page: 1,
+            limit: 20
+        });
+    }
+};
+
+export const markNotificationRead = async (req: AuthRequest, res: Response) => {
+    try {
+        const userId = req.user!.id;
+        const notificationId = req.params.id;
+
+        console.log('📌 Marking notification as read:', notificationId, 'for user:', userId);
+
+        const result = await executeNonQuery(
+            `UPDATE nt_notifications SET is_read = 1 WHERE id = @notificationId AND type in ('new_post','reported')`,
+            { notificationId }
+        );
+
+        if (result.rowsAffected && result.rowsAffected[0] === 0) {
+            console.log('Notification not found or already read');
+            return res.status(404).json({ success: false, message: 'Notification not found' });
+        }
+
+        res.json({ success: true });
+    } catch (error) {
+        console.error('Error marking notification as read:', error);
+        res.status(500).json({ success: false, message: 'Error updating notification' });
+    }
 };

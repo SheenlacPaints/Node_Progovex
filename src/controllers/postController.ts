@@ -10,6 +10,7 @@ import { v4 as uuidv4 } from 'uuid';
 import moment from 'moment-timezone';
 import sql from 'mssql';
 import { s3Helper } from '../helpers/s3.helper';
+import { FirebaseTokenService } from '../config/firebaseAuth';
 
 const getIo = (req: AuthRequest) => {
     return req.app.get('io');
@@ -266,6 +267,50 @@ export const createPost = async (req: AuthRequest, res: Response) => {
                 responsePollData = finalPollData;
             }
         }
+
+        // Send notification to post owner if the commenter is not the post owner
+        const commentDetails = await executeQuery<any>(
+            `SELECT p.id, p.cuserid, u.cuser_name as username
+            FROM nt_posts p
+            JOIN users u ON p.cuserid = u.cuserid
+            WHERE p.id = @postId`,
+            { postId: parseInt(postId) }
+        );
+
+        const userDetails = await executeQuery<any>(
+        `SELECT u.cfirst_name, u.clast_name
+        FROM users u
+        WHERE u.cuserid = @userId`,
+        { userId: userId }
+        );
+
+        const commentInfo = commentDetails[0];
+
+        const notificationContent = `New post requested by ${userDetails[0]?.cfirst_name || 'Someone'}.`;
+
+        await executeNonQuery(
+            `INSERT INTO nt_notifications (cuserid, from_user_id, type, reference_id, reference_type, content, created_at)
+            VALUES (@userId, @fromUserId, 'new_post', @referenceId, 'new_post', @content, GETDATE())`,
+            {
+            userId: commentInfo.cuserid,
+            fromUserId: userId,
+            referenceId: parseInt(postId),
+            content: notificationContent
+            }
+        );
+
+        // send push notification for the post owner
+        const tokens = [
+            "cPO8CltPT3ef_GWoN0VLzp:APA91bFzQ7RKOnDvPC0GFLSe8j4jLx2iwjFjfTvRYw0yyI2yGoQza_BQzRJNTEGFo7U93G-CAgb9gO5KpCVT1XWtAh16lS2doHZT-zLhg1NxkXpaARzYeleavggG5hLgKnTPJkgY0z0R"
+        ];
+        let notifyObj = {
+            userUrl: tokens,
+            title: "Progovex Post Notification",
+            body: `New post requested by ${userDetails[0]?.cfirst_name || 'Someone'}.`
+        }
+        const token = await new FirebaseTokenService().sendSelectedUserNotify(notifyObj);
+        console.log('🔔 Notification sent:', token);
+        
 
         const newPost = {
             id: postId,
@@ -835,6 +880,18 @@ export const addComment = async (req: AuthRequest, res: Response) => {
                 content: notificationContent
                 }
             );
+
+            // send push notification for the post owner
+            const tokens = [
+                "cPO8CltPT3ef_GWoN0VLzp:APA91bFzQ7RKOnDvPC0GFLSe8j4jLx2iwjFjfTvRYw0yyI2yGoQza_BQzRJNTEGFo7U93G-CAgb9gO5KpCVT1XWtAh16lS2doHZT-zLhg1NxkXpaARzYeleavggG5hLgKnTPJkgY0z0R"
+            ];
+            let notifyObj = {
+                userUrl: tokens,
+                title: "Progovex Post Notification",
+                body: `Your post was commented on by ${userDetails[0]?.cfirst_name || 'Someone'}. Remarks: ${commentRemarks}`
+            }
+            const token = await new FirebaseTokenService().sendSelectedUserNotify(notifyObj);
+            console.log('🔔 Notification sent:', token);
         }
 
         // Send HTTP response
@@ -964,7 +1021,20 @@ export const addReaction = async (req: AuthRequest, res: Response) => {
                     content: notificationContent
                     }
                 );
+
+                // send push notification for the post owner
+                const tokens = [
+                    "cPO8CltPT3ef_GWoN0VLzp:APA91bFzQ7RKOnDvPC0GFLSe8j4jLx2iwjFjfTvRYw0yyI2yGoQza_BQzRJNTEGFo7U93G-CAgb9gO5KpCVT1XWtAh16lS2doHZT-zLhg1NxkXpaARzYeleavggG5hLgKnTPJkgY0z0R"
+                ];
+                let notifyObj = {
+                    userUrl: tokens,
+                    title: "Progovex Post Notification",
+                    body: `Your post was liked by ${userDetails[0]?.cfirst_name || 'Someone'}`
+                }
+                const token = await new FirebaseTokenService().sendSelectedUserNotify(notifyObj);
+                console.log('🔔 Notification sent:', token);
             }
+
             isLiked = true;
         }
 
@@ -1156,14 +1226,15 @@ export const getReactions = async (req: AuthRequest, res: Response) => {
     // );
 
     const reactions = await executeQuery<any>(
-        `SELECT a.type, b.cfirst_name, COUNT(*) AS Count
+        `SELECT a.type, b.cuser_name, COUNT(*) AS Count,b.cprofile_image_path
         FROM nt_reactions a
         JOIN users b
             ON a.cuserid = b.cuserid
         WHERE a.post_id = @postId
         GROUP BY
             a.type,
-            b.cfirst_name;`,
+            b.cuser_name,
+            b.cprofile_image_path;`,
         { postId: parseInt(id) }
     );
 
@@ -1391,7 +1462,20 @@ export const reportPost = async (req: AuthRequest, res: Response) => {
           content: notificationContent
         }
       );
+
+        // send push notification for the post owner
+        const tokens = [
+            "cPO8CltPT3ef_GWoN0VLzp:APA91bFzQ7RKOnDvPC0GFLSe8j4jLx2iwjFjfTvRYw0yyI2yGoQza_BQzRJNTEGFo7U93G-CAgb9gO5KpCVT1XWtAh16lS2doHZT-zLhg1NxkXpaARzYeleavggG5hLgKnTPJkgY0z0R"
+        ];
+        let notifyObj = {
+            userUrl: tokens,
+            title: "Progovex Post Notification",
+            body: `Your post was liked by ${userDetails[0]?.cfirst_name || 'Someone'}`
+        }
+        const token = await new FirebaseTokenService().sendSelectedUserNotify(notifyObj);
+        console.log('🔔 Notification sent:', token);
     }
+    
 
     res.json({ success: true, message: 'Post reported' });
 };
