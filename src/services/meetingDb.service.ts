@@ -311,10 +311,11 @@ export class MeetingDbService {
     static async getMeetingByCode(code: string): Promise<any> {
         const results = await executeQuery<any>(
             `SELECT m.*, u.cuser_name as host_name, u.cemail as host_email,
-                CASE WHEN m.status IN ('completed', 'cancelled')
-                    OR (m.end_time IS NOT NULL AND m.end_time < GETUTCDATE())
-                    OR (m.status = 'scheduled' AND m.start_time IS NOT NULL AND m.start_time < GETUTCDATE())
-                    THEN 1 ELSE 0 END as is_past
+                CASE WHEN m.status IN ('completed', 'cancelled') THEN 1
+                    WHEN m.status = 'active' AND m.actual_end IS NOT NULL THEN 1
+                    WHEN m.status = 'scheduled' AND m.start_time IS NOT NULL
+                        AND DATEADD(MINUTE, ISNULL(m.duration_minutes, 60), m.start_time) < GETUTCDATE() THEN 1
+                    ELSE 0 END as is_past
              FROM nt_meetings m
              LEFT JOIN users u ON m.host_user_id = u.id
              WHERE m.meeting_code = @code`,
@@ -498,18 +499,24 @@ export class MeetingDbService {
     static async getUserMeetings(userId: number): Promise<any[]> {
         return await executeQuery<any>(
             `SELECT m.*, u.cuser_name as host_name,
-                (SELECT COUNT(*) FROM nt_meeting_participants WHERE meeting_id = m.id AND status = 'joined') as participant_count,
-                CASE WHEN m.status IN ('completed', 'cancelled')
-                    OR (m.end_time IS NOT NULL AND m.end_time < GETUTCDATE())
-                    OR (m.status = 'scheduled' AND m.start_time IS NOT NULL AND m.start_time < GETUTCDATE())
-                    THEN 1 ELSE 0 END as is_past
+                (SELECT COUNT(*) FROM nt_meeting_participants WHERE meeting_id = m.id AND status IN ('joined', 'invited')) as participant_count,
+                (SELECT COUNT(*) FROM nt_meeting_participants WHERE meeting_id = m.id AND status = 'joined') as active_participants,
+                CASE WHEN m.status IN ('completed', 'cancelled') THEN 1
+                    WHEN m.status = 'active' AND m.actual_end IS NOT NULL THEN 1
+                    WHEN m.status = 'scheduled' AND m.start_time IS NOT NULL
+                        AND DATEADD(MINUTE, ISNULL(m.duration_minutes, 60), m.start_time) < GETUTCDATE() THEN 1
+                    ELSE 0 END as is_past,
+                CASE WHEN m.status = 'active' AND m.actual_end IS NULL THEN 1
+                    WHEN m.status = 'scheduled' AND (SELECT COUNT(*) FROM nt_meeting_participants WHERE meeting_id = m.id AND status = 'joined') > 0 THEN 1
+                    ELSE 0 END as is_live
              FROM nt_meetings m
              LEFT JOIN users u ON m.host_user_id = u.id
              WHERE m.host_user_id = @uid
                 OR m.id IN (SELECT meeting_id FROM nt_meeting_participants WHERE user_id = @uid)
                 OR m.id IN (SELECT meeting_id FROM nt_meeting_invitations WHERE user_id = @uid)
              ORDER BY
-                CASE WHEN m.status = 'active' THEN 0 WHEN m.status = 'scheduled' THEN 1 ELSE 2 END,
+                CASE WHEN m.status = 'active' OR (m.status = 'scheduled' AND (SELECT COUNT(*) FROM nt_meeting_participants WHERE meeting_id = m.id AND status = 'joined') > 0) THEN 0
+                     WHEN m.status = 'scheduled' THEN 1 ELSE 2 END,
                 m.start_time DESC, m.created_at DESC`,
             { uid: userId }
         );
@@ -607,16 +614,20 @@ export class MeetingDbService {
     static async getUpcomingMeetings(userId: number): Promise<any[]> {
         return await executeQuery<any>(
             `SELECT m.*, u.cuser_name as host_name,
-                (SELECT COUNT(*) FROM nt_meeting_participants WHERE meeting_id = m.id AND status = 'joined') as participant_count
+                (SELECT COUNT(*) FROM nt_meeting_participants WHERE meeting_id = m.id AND status IN ('joined', 'invited')) as participant_count
              FROM nt_meetings m
              LEFT JOIN users u ON m.host_user_id = u.id
              WHERE (m.host_user_id = @uid
                 OR m.id IN (SELECT meeting_id FROM nt_meeting_participants WHERE user_id = @uid)
                 OR m.id IN (SELECT meeting_id FROM nt_meeting_invitations WHERE user_id = @uid))
                 AND m.status IN ('scheduled', 'active')
-                AND NOT (m.end_time IS NOT NULL AND m.end_time < GETUTCDATE())
-                AND NOT (m.status = 'scheduled' AND m.start_time IS NOT NULL AND m.start_time < GETUTCDATE())
-             ORDER BY m.start_time ASC`,
+                AND m.status NOT IN ('completed', 'cancelled')
+                AND NOT (m.status = 'active' AND m.actual_end IS NOT NULL)
+                AND NOT (m.status = 'scheduled' AND m.start_time IS NOT NULL
+                    AND DATEADD(MINUTE, ISNULL(m.duration_minutes, 60), m.start_time) < GETUTCDATE())
+             ORDER BY
+                CASE WHEN m.status = 'active' THEN 0 ELSE 1 END,
+                m.start_time ASC`,
             { uid: userId }
         );
     }
@@ -624,11 +635,18 @@ export class MeetingDbService {
     static async getMeetingStats(userId: number): Promise<any> {
         const results = await executeQuery<any>(
             `SELECT
-                COUNT(CASE WHEN status = 'active' THEN 1 END) as live_count,
+                COUNT(CASE WHEN status = 'active' AND actual_end IS NULL THEN 1 END) as live_count,
                 COUNT(CASE WHEN status = 'completed' THEN 1 END) as completed_count,
                 COUNT(*) as total_count,
-                ISNULL(SUM(CASE WHEN actual_end IS NOT NULL AND actual_start IS NOT NULL
-                    THEN DATEDIFF(SECOND, actual_start, actual_end) ELSE 0 END), 0) as total_duration_seconds
+                ISNULL(SUM(
+                    CASE
+                        WHEN status = 'active' AND actual_start IS NOT NULL AND actual_end IS NULL
+                            THEN DATEDIFF(SECOND, actual_start, GETUTCDATE())
+                        WHEN actual_end IS NOT NULL AND actual_start IS NOT NULL
+                            THEN DATEDIFF(SECOND, actual_start, actual_end)
+                        ELSE 0
+                    END
+                ), 0) as total_duration_seconds
              FROM nt_meetings
              WHERE host_user_id = @uid OR
                 id IN (SELECT meeting_id FROM nt_meeting_participants WHERE user_id = @uid)`,
@@ -715,14 +733,16 @@ export class MeetingDbService {
     static async getInvitedMeetings(userId: number): Promise<any[]> {
         return await executeQuery<any>(
             `SELECT m.*, u.cuser_name as host_name,
-                (SELECT COUNT(*) FROM nt_meeting_participants WHERE meeting_id = m.id AND status = 'joined') as participant_count,
+                (SELECT COUNT(*) FROM nt_meeting_participants WHERE meeting_id = m.id AND status IN ('joined', 'invited')) as participant_count,
                 inv.status as invitation_status, inv.created_at as invited_at
              FROM nt_meeting_invitations inv
              INNER JOIN nt_meetings m ON inv.meeting_id = m.id
              LEFT JOIN users u ON m.host_user_id = u.id
              WHERE inv.user_id = @uid AND m.status IN ('scheduled', 'active')
-                AND NOT (m.end_time IS NOT NULL AND m.end_time < GETUTCDATE())
-                AND NOT (m.status = 'scheduled' AND m.start_time IS NOT NULL AND m.start_time < GETUTCDATE())
+                AND m.status NOT IN ('completed', 'cancelled')
+                AND NOT (m.status = 'active' AND m.actual_end IS NOT NULL)
+                AND NOT (m.status = 'scheduled' AND m.start_time IS NOT NULL
+                    AND DATEADD(MINUTE, ISNULL(m.duration_minutes, 60), m.start_time) < GETUTCDATE())
                 AND m.id NOT IN (SELECT meeting_id FROM nt_meeting_participants WHERE user_id = @uid)
              ORDER BY m.start_time ASC`,
             { uid: userId }

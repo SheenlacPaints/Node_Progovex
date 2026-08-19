@@ -45,6 +45,7 @@ const extraOrigins = process.env.ALLOWED_ORIGINS
     ? process.env.ALLOWED_ORIGINS.split(',').map(s => s.trim()).filter(Boolean)
     : [];
 const allowedOrigins = [
+    ...extraOrigins,
     'https://taskflow.sheenlac.com',
     'https://meet.sheenlac.com',
     'https://devmeet.sheenlac.com',
