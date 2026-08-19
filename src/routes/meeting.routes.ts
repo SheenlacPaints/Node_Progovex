@@ -12,6 +12,7 @@ router.post('/', authenticateToken, MeetingController.createMeeting);
 router.get('/my', authenticateToken, MeetingController.getUserMeetings);
 router.get('/upcoming', authenticateToken, MeetingController.getUpcomingMeetings);
 router.get('/stats', authenticateToken, MeetingController.getMeetingStats);
+router.get('/calendar', authenticateToken, MeetingController.getCalendarMeetings);
 
 // Schedule
 router.post('/schedule', authenticateToken, MeetingController.scheduleMeeting);

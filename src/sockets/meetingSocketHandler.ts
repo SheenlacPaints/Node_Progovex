@@ -17,6 +17,12 @@ function getRoomUsers(meetingCode: string): MeetingUser[] {
     return Array.from(room.values());
 }
 
+function broadcastParticipantCount(io: Server, meetingCode: string): void {
+    const room = meetingRooms.get(meetingCode);
+    const count = room ? room.size : 0;
+    io.to(`meeting_${meetingCode}`).emit('meeting:participant-count', { meetingCode, count });
+}
+
 export function registerMeetingSocketHandlers(io: Server): void {
 
     io.on('connection', (socket: Socket) => {
@@ -55,6 +61,8 @@ export function registerMeetingSocketHandlers(io: Server): void {
                 socketId: socket.id,
                 user: { name: currentUser.name, id: currentUser.userId }
             });
+
+            broadcastParticipantCount(io, meetingCode);
 
             console.log(`[MeetingSocket] ${currentUser.name} joined meeting ${meetingCode}`);
         });
@@ -260,6 +268,8 @@ export function registerMeetingSocketHandlers(io: Server): void {
                 name: user?.name
             });
 
+            broadcastParticipantCount(io, data.meetingCode);
+
             try {
                 const meeting = await MeetingDbService.getMeetingByCode(data.meetingCode);
                 if (meeting) {
@@ -289,6 +299,8 @@ export function registerMeetingSocketHandlers(io: Server): void {
                             name: user.name
                         });
                     }
+
+                    broadcastParticipantCount(io, meetingCode);
 
                     try {
                         const meeting = await MeetingDbService.getMeetingByCode(meetingCode);

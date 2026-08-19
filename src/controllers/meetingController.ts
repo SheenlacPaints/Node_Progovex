@@ -11,12 +11,14 @@ function toInt(val: any): number | undefined {
 
 function isPastMeeting(meeting: any): boolean {
     if (!meeting) return true;
-    const now = Date.now();
-    const endTime = meeting.end_time ? new Date(meeting.end_time).getTime() : null;
-    const startTime = meeting.start_time ? new Date(meeting.start_time).getTime() : null;
-    return meeting.status === 'completed' || meeting.status === 'cancelled' ||
-        (endTime !== null && endTime < now) ||
-        (meeting.status === 'scheduled' && startTime !== null && startTime < now);
+    if (meeting.status === 'completed' || meeting.status === 'cancelled') return true;
+    if (meeting.status === 'active' && meeting.actual_end) return true;
+    if (meeting.status === 'scheduled' && meeting.start_time) {
+        const duration = meeting.duration_minutes || 60;
+        const endTime = new Date(new Date(meeting.start_time).getTime() + duration * 60000);
+        if (endTime.getTime() < Date.now()) return true;
+    }
+    return false;
 }
 
 export class MeetingController {
@@ -153,6 +155,10 @@ export class MeetingController {
 
             if (isPastMeeting(meeting)) {
                 res.status(400).json({ success: false, message: 'This meeting has ended and can no longer be joined' }); return;
+            }
+
+            if (meeting.status !== 'active' && meeting.status !== 'scheduled') {
+                res.status(400).json({ success: false, message: 'This meeting is not available to join' }); return;
             }
 
             if (meeting.meeting_password && meeting.meeting_password !== req.body.password) {
@@ -714,6 +720,37 @@ export class MeetingController {
 
             const messages = await MeetingDbService.getMessages(meeting.id);
             res.json({ success: true, messages });
+        } catch (error: any) {
+            res.status(500).json({ success: false, message: error.message });
+        }
+    }
+
+    static async getCalendarMeetings(req: AuthRequest, res: Response): Promise<void> {
+        try {
+            const userId = toInt(req.user?.id || req.user?.cuserid);
+            if (!userId) { res.status(401).json({ success: false, message: 'Unauthorized' }); return; }
+
+            const month = toInt(req.query.month) || new Date().getMonth() + 1;
+            const year = toInt(req.query.year) || new Date().getFullYear();
+
+            const startDate = new Date(Date.UTC(year, month - 1, 1, 0, 0, 0));
+            const endDate = new Date(Date.UTC(year, month, 0, 23, 59, 59));
+
+            const meetings = await MeetingDbService.getUserMeetings(userId);
+
+            const filtered = meetings.filter((m: any) => {
+                if (m.start_time) {
+                    const d = new Date(m.start_time);
+                    return d >= startDate && d <= endDate;
+                }
+                if (m.created_at) {
+                    const d = new Date(m.created_at);
+                    return d >= startDate && d <= endDate;
+                }
+                return false;
+            });
+
+            res.json({ success: true, meetings: filtered });
         } catch (error: any) {
             res.status(500).json({ success: false, message: error.message });
         }
