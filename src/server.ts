@@ -37,7 +37,7 @@ import { registerMeetingSocketHandlers } from './sockets/meetingSocketHandler';
 import { registerChatSocketHandlers } from './sockets/chatSocketHandler';
 
 const app = express();
-app.set('trust proxy', true);
+app.set('trust proxy', Number(process.env.TRUST_PROXY_HOPS || 1));
 const server = http.createServer(app);
 
 const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:4200';

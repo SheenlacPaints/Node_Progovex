@@ -39,3 +39,7 @@ dump.rdb
 
 # PM2 files
 .pm2/
+
+# Firebase files
+firebase-service-account.json
+.env

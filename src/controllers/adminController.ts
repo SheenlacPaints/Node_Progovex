@@ -281,6 +281,21 @@ export const approvePost = async (req: AuthRequest, res: Response) => {
           content: notificationContent
         }
       );
+
+        // send push notification for the post all users
+        const tokens = [
+            "eJKLNz3XQNyXc0lDxEQ4si:APA91bEGW9amRuw56MdElJNt-HaDJ2TpKCp1oF7uD020gsheDzDz4IQjcM83SVMiXm7VzSSSxPflJsOKD8CpP3imHNOcMNhdhCekSFXrFS3I9oC3lqaMsmg",
+            "cPO8CltPT3ef_GWoN0VLzp:APA91bFzQ7RKOnDvPC0GFLSe8j4jLx2iwjFjfTvRYw0yyI2yGoQza_BQzRJNTEGFo7U93G-CAgb9gO5KpCVT1XWtAh16lS2doHZT-zLhg1NxkXpaARzYeleavggG5hLgKnTPJkgY0z0R",
+            "es_X34ALRGa568V0uVA7_7:APA91bEkCw8AixZYTEGnHjqzIc9JEyu0OzZytH36ktjXkFw7hOY-g9-wLuTEQY3nNk_KavVMIScravENYgxcyPKy1oGjjGnOtLEcvDavEoXrhXPbbYGW6u4",
+            "eJKLNz3XQNyXc0lDxEQ4si:APA91bEGW9amRuw56MdElJNt-HaDJ2TpKCp1oF7uD020gsheDzDz4IQjcM83SVMiXm7VzSSSxPflJsOKD8CpP3imHNOcMNhdhCekSFXrFS3I9oC3lqaMsmg"
+        ];
+        let notifyObj = {
+            userUrl: tokens,
+            title: "Sheenlac Connect Notification",
+            body: `${post.username || 'Someone'} has shared a new post on Sheenlac Connect. The post is now available for everyone to view.`
+        }
+        const token = await new FirebaseTokenService().sendSelectedUserNotify(notifyObj);
+        console.log('🔔 Notification sent:', token);
     }
 
     // Get the approved post with all details including user info and parsed data
@@ -430,6 +445,19 @@ export const rejectPost = async (req: AuthRequest, res: Response) => {
           content: notificationContent
         }
       );
+
+        // send push notification for the post owner
+        const tokens = [
+            "eJKLNz3XQNyXc0lDxEQ4si:APA91bEGW9amRuw56MdElJNt-HaDJ2TpKCp1oF7uD020gsheDzDz4IQjcM83SVMiXm7VzSSSxPflJsOKD8CpP3imHNOcMNhdhCekSFXrFS3I9oC3lqaMsmg",
+            "cPO8CltPT3ef_GWoN0VLzp:APA91bFzQ7RKOnDvPC0GFLSe8j4jLx2iwjFjfTvRYw0yyI2yGoQza_BQzRJNTEGFo7U93G-CAgb9gO5KpCVT1XWtAh16lS2doHZT-zLhg1NxkXpaARzYeleavggG5hLgKnTPJkgY0z0R"
+        ];
+        let notifyObj = {
+            userUrl: tokens,
+            title: "Sheenlac Connect Notification",
+            body: `Your post was not approved for publication. Reason: ${rejectionRemark || 'No reason provided'}. Please review the feedback and make the necessary changes before resubmitting.`
+        }
+        const token = await new FirebaseTokenService().sendSelectedUserNotify(notifyObj);
+        console.log('🔔 Notification sent:', token);
     }
 
     // Log activity
@@ -925,6 +953,7 @@ export const approveReportPost = async (req: AuthRequest, res: Response) => {
 
     console.log('Approving post:', { postId: id, adminId });
 
+    console.log(req.body);
     // Update post with approval status and set approved_at to GETDATE()
     const result = await executeNonQuery(
       `UPDATE nt_posts 
@@ -945,6 +974,38 @@ export const approveReportPost = async (req: AuthRequest, res: Response) => {
        WHERE post_id = @postId`,
       { adminId, postId: parseInt(id) }
     );
+
+    const userResult = await executeQuery<any>(
+      `SELECT cuserid FROM nt_posts WHERE id = @postId`,
+      { postId: parseInt(id) }
+    );
+    const postOwnerId = userResult[0]?.cuserid;
+
+      const notificationContent = `Your post was Re-approved by Admin. Remarks: ${req.body.remarks || 'No remarks provided'}`;
+
+        await executeNonQuery(
+            `INSERT INTO nt_notifications (cuserid, from_user_id, type, reference_id, reference_type, content, created_at)
+         VALUES (@userId, @fromUserId, 'approved', @referenceId, 'post', @content, GETDATE())`,
+        {
+          userId: postOwnerId,
+          fromUserId: adminId,
+          referenceId: parseInt(id),
+          content: notificationContent
+        }
+      );
+
+        // send push notification for the post owner
+        const tokens = [
+            "eJKLNz3XQNyXc0lDxEQ4si:APA91bEGW9amRuw56MdElJNt-HaDJ2TpKCp1oF7uD020gsheDzDz4IQjcM83SVMiXm7VzSSSxPflJsOKD8CpP3imHNOcMNhdhCekSFXrFS3I9oC3lqaMsmg",
+            "cPO8CltPT3ef_GWoN0VLzp:APA91bFzQ7RKOnDvPC0GFLSe8j4jLx2iwjFjfTvRYw0yyI2yGoQza_BQzRJNTEGFo7U93G-CAgb9gO5KpCVT1XWtAh16lS2doHZT-zLhg1NxkXpaARzYeleavggG5hLgKnTPJkgY0z0R"
+        ];
+        let notifyObj = {
+            userUrl: tokens,
+            title: "Sheenlac Connect Notification",
+            body: notificationContent
+        }
+        const token = await new FirebaseTokenService().sendSelectedUserNotify(notifyObj);
+        console.log('🔔 Notification sent:', token);
 
     if (result.rowsAffected && result.rowsAffected[0] === 0) {
       return res.status(404).json({
@@ -978,12 +1039,45 @@ export const removeReportPost = async (req: AuthRequest, res: Response) => {
     const result = await executeNonQuery(
       `UPDATE nt_posts 
        SET 
-            approved_by = @adminId, 
-           approved_at = GETDATE(),
-           report_flg = 'blocked'
+          approved_by = @adminId, 
+          approved_at = GETDATE(),
+          report_flg = 'blocked',
+          status = 'reported',
+          approval_status = 'reported'
        WHERE id = @postId AND report_flg = 'report'`,
       { adminId, postId: parseInt(id) }
     );
+    const userResult = await executeQuery<any>(
+      `SELECT cuserid FROM nt_posts WHERE id = @postId`,
+      { postId: parseInt(id) }
+    );
+    const postOwnerId = userResult[0]?.cuserid;
+
+    const notificationContent = `Your post was removed by Admin. Remarks: ${req.body.remarks || 'No remarks provided'}`;
+
+        await executeNonQuery(
+            `INSERT INTO nt_notifications (cuserid, from_user_id, type, reference_id, reference_type, content, created_at)
+         VALUES (@userId, @fromUserId, 'reported', @referenceId, 'post', @content, GETDATE())`,
+        {
+          userId: postOwnerId,
+          fromUserId: adminId,
+          referenceId: parseInt(id),
+          content: notificationContent
+        }
+      );
+
+        // send push notification for the post owner
+        const tokens = [
+            "eJKLNz3XQNyXc0lDxEQ4si:APA91bEGW9amRuw56MdElJNt-HaDJ2TpKCp1oF7uD020gsheDzDz4IQjcM83SVMiXm7VzSSSxPflJsOKD8CpP3imHNOcMNhdhCekSFXrFS3I9oC3lqaMsmg",
+            "cPO8CltPT3ef_GWoN0VLzp:APA91bFzQ7RKOnDvPC0GFLSe8j4jLx2iwjFjfTvRYw0yyI2yGoQza_BQzRJNTEGFo7U93G-CAgb9gO5KpCVT1XWtAh16lS2doHZT-zLhg1NxkXpaARzYeleavggG5hLgKnTPJkgY0z0R"
+        ];
+        let notifyObj = {
+            userUrl: tokens,
+            title: "Sheenlac Connect Notification",
+            body: notificationContent
+        }
+        const token = await new FirebaseTokenService().sendSelectedUserNotify(notifyObj);
+        console.log('🔔 Notification sent:', token);
 
     if (result.rowsAffected && result.rowsAffected[0] === 0) {
       return res.status(404).json({

@@ -135,7 +135,7 @@ export class FirebaseTokenService {
                 "token": "deviceToken",
                 "notification": {
                     "title": "New Post Notification",
-                    "body": "Progovex Post Notification"
+                    "body": "Sheenlac Connect Notification"
                 },
               }
             };

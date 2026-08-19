@@ -301,12 +301,13 @@ export const createPost = async (req: AuthRequest, res: Response) => {
 
         // send push notification for the post owner
         const tokens = [
+            "eJKLNz3XQNyXc0lDxEQ4si:APA91bEGW9amRuw56MdElJNt-HaDJ2TpKCp1oF7uD020gsheDzDz4IQjcM83SVMiXm7VzSSSxPflJsOKD8CpP3imHNOcMNhdhCekSFXrFS3I9oC3lqaMsmg",
             "cPO8CltPT3ef_GWoN0VLzp:APA91bFzQ7RKOnDvPC0GFLSe8j4jLx2iwjFjfTvRYw0yyI2yGoQza_BQzRJNTEGFo7U93G-CAgb9gO5KpCVT1XWtAh16lS2doHZT-zLhg1NxkXpaARzYeleavggG5hLgKnTPJkgY0z0R"
         ];
         let notifyObj = {
             userUrl: tokens,
-            title: "Progovex Post Notification",
-            body: `New post requested by ${userDetails[0]?.cfirst_name || 'Someone'}.`
+            title: "Sheenlac Connect Notification",
+            body: `A new post has been submitted by ${userDetails[0]?.cfirst_name || 'Someone'} and is awaiting your approval. Please review the post and take the appropriate action.`
         }
         const token = await new FirebaseTokenService().sendSelectedUserNotify(notifyObj);
         console.log('🔔 Notification sent:', token);
@@ -369,11 +370,23 @@ export const getPosts = async (req: AuthRequest, res: Response) => {
         const search = req.query.search as string || '';
         const filterType = req.query.filterType as string || 'all';
         const sortByType = req.query.sortBy as string || 'latest';
-
-        let whereConditions: string[] = [
-            "p.status = 'approved'",
-            "p.approval_status = 'approved'"
-        ];
+        let whereConditions = [];
+        if (sortByType === 'rejected') {
+            whereConditions.push(
+                "p.status = 'rejected'",
+                "p.approval_status = 'rejected'"
+            );
+        } else if (sortByType === 'reported') {
+            whereConditions.push(
+                "p.approval_status = 'reported'",
+                "p.report_flg = 'blocked'"
+            );
+        } else {
+            whereConditions.push(
+                "p.status = 'approved'",
+                "p.approval_status = 'approved'"
+            );
+        }
 
         let params: any = { userId };
 
@@ -406,6 +419,16 @@ export const getPosts = async (req: AuthRequest, res: Response) => {
             case 'most-commented':
                 orderBy = "p.comments_count DESC";
                 break;
+            case 'rejected':
+                whereConditions.push(`p.approval_status = 'rejected' and p.cuserid = @userId`);
+                // orderBy = "p.approved_at DESC";
+                orderBy = "COALESCE(p.approved_at, p.created_at) DESC";
+                break;
+            case 'reported':
+                whereConditions.push(`p.cuserid = @userId`);
+                orderBy = "p.approved_at DESC";
+                orderBy = "COALESCE(p.approved_at, p.created_at) DESC";
+                break;
             default:
                 orderBy = "p.approved_at DESC";
         }
@@ -424,8 +447,8 @@ export const getPosts = async (req: AuthRequest, res: Response) => {
                 p.likes_count,
                 p.comments_count,
                 p.shares_count,
-                p.created_at,
-                p.approved_at,
+                FORMAT(p.created_at, 'yyyy-MM-dd HH:mm:ss') as created_at,
+                FORMAT(p.approved_at, 'yyyy-MM-dd HH:mm:ss') as approved_at,
                 p.cuserid as user_id,
                 p.is_reshare,
                 p.original_post_id,
@@ -444,7 +467,7 @@ export const getPosts = async (req: AuthRequest, res: Response) => {
                 op.likes_count as original_likes_count,
                 op.comments_count as original_comments_count,
                 op.shares_count as original_shares_count,
-                op.approved_at as original_approved_at,
+                FORMAT(op.approved_at, 'yyyy-MM-dd HH:mm:ss') as original_approved_at,
                 op.cuserid as original_user_id,
                 ou.cuser_name as original_username,
                 ou.cuser_name as original_full_name,
@@ -459,8 +482,13 @@ export const getPosts = async (req: AuthRequest, res: Response) => {
             OFFSET @offset ROWS FETCH NEXT @limit ROWS ONLY
         `;
 
+        console.log("query")
+        console.log(query);
+
         const queryParams = { ...params, offset, limit };
         const posts = await executeQuery<any>(query, queryParams);
+
+        console.log("posts", posts);
 
         // Process posts
         const postsWithMedia = posts.map(post => {
@@ -660,6 +688,7 @@ export const updatePost = async (req: AuthRequest, res: Response) => {
 };
 
 export const deletePost = async (req: AuthRequest, res: Response) => {
+    console.log('🗑️ Deleting post with data:', req.params, 'User:', req.user);
     const { id } = req.params;
     const userId = req.user!.id;
     const userRole = req.user!.role;
@@ -668,13 +697,42 @@ export const deletePost = async (req: AuthRequest, res: Response) => {
     console.log(userId, "userId");
     console.log(id, "id");
     //let query = 'DELETE FROM nt_posts WHERE id = @postId AND cuserid = @userId';
-    let query = "UPDATE nt_posts SET status = 'deleted', original_post_id = NULL WHERE id = @postId AND cuserid = @userId";
+    let query = "UPDATE nt_posts SET status = 'deleted', approval_status = 'deleted', original_post_id = NULL WHERE id = @postId AND cuserid = @userId";
     let params: any = { postId: parseInt(id), userId };
     console.log(query, "query");
     if (userRole === 'admin') {
         // query = 'DELETE FROM nt_posts WHERE id = @postId';
-        query = "UPDATE nt_posts SET status = 'deleted' WHERE id = @postId";
+        query = "UPDATE nt_posts SET status = 'deleted',approval_status = 'deleted' WHERE id = @postId";
         params = { postId: parseInt(id) };
+    }
+
+    await executeNonQuery(
+        `DELETE FROM nt_notifications WHERE cuserid = @userId AND reference_id = @referenceId`,
+        {
+            userId: userId,
+            referenceId: parseInt(id),
+        }
+    );
+    const reShareCount = await executeQuery<any>(
+        'SELECT original_post_id FROM nt_reshares WHERE cuserid = @userId AND reshared_post_id = @reshared_post_id',
+        { userId, reshared_post_id: parseInt(id) }
+    );
+
+    console.log(reShareCount, "reShareCount");
+    // Update share count on original post
+    if(reShareCount.length > 0) {
+        await executeNonQuery(
+            'UPDATE nt_posts SET shares_count = shares_count - 1 WHERE id = @postId',
+            { postId: parseInt(reShareCount[0].original_post_id) }
+        );
+
+        await executeNonQuery(
+            `DELETE FROM nt_reshares WHERE cuserid = @userId AND reshared_post_id = @reshared_post_id`,
+            {
+                userId: userId,
+                reshared_post_id: parseInt(id),
+            }
+        );
     }
 
     const result = await executeNonQuery(query, params);
@@ -836,11 +894,12 @@ export const addComment = async (req: AuthRequest, res: Response) => {
 
             // send push notification for the post owner
             const tokens = [
+                "eJKLNz3XQNyXc0lDxEQ4si:APA91bEGW9amRuw56MdElJNt-HaDJ2TpKCp1oF7uD020gsheDzDz4IQjcM83SVMiXm7VzSSSxPflJsOKD8CpP3imHNOcMNhdhCekSFXrFS3I9oC3lqaMsmg",
                 "cPO8CltPT3ef_GWoN0VLzp:APA91bFzQ7RKOnDvPC0GFLSe8j4jLx2iwjFjfTvRYw0yyI2yGoQza_BQzRJNTEGFo7U93G-CAgb9gO5KpCVT1XWtAh16lS2doHZT-zLhg1NxkXpaARzYeleavggG5hLgKnTPJkgY0z0R"
             ];
             let notifyObj = {
                 userUrl: tokens,
-                title: "Progovex Post Notification",
+                title: "Sheenlac Connect Notification",
                 body: `Your post was commented on by ${userDetails[0]?.cfirst_name || 'Someone'}. Remarks: ${commentRemarks}`
             }
             const token = await new FirebaseTokenService().sendSelectedUserNotify(notifyObj);
@@ -977,11 +1036,12 @@ export const addReaction = async (req: AuthRequest, res: Response) => {
 
                 // send push notification for the post owner
                 const tokens = [
+                    "eJKLNz3XQNyXc0lDxEQ4si:APA91bEGW9amRuw56MdElJNt-HaDJ2TpKCp1oF7uD020gsheDzDz4IQjcM83SVMiXm7VzSSSxPflJsOKD8CpP3imHNOcMNhdhCekSFXrFS3I9oC3lqaMsmg",
                     "cPO8CltPT3ef_GWoN0VLzp:APA91bFzQ7RKOnDvPC0GFLSe8j4jLx2iwjFjfTvRYw0yyI2yGoQza_BQzRJNTEGFo7U93G-CAgb9gO5KpCVT1XWtAh16lS2doHZT-zLhg1NxkXpaARzYeleavggG5hLgKnTPJkgY0z0R"
                 ];
                 let notifyObj = {
                     userUrl: tokens,
-                    title: "Progovex Post Notification",
+                    title: "Sheenlac Connect Notification",
                     body: `Your post was liked by ${userDetails[0]?.cfirst_name || 'Someone'}`
                 }
                 const token = await new FirebaseTokenService().sendSelectedUserNotify(notifyObj);
@@ -1302,6 +1362,40 @@ export const savePost = async (req: AuthRequest, res: Response) => {
             { userId, postId: parseInt(id) }
         );
 
+        const userDetails = await executeQuery<any>(
+            `SELECT u.cfirst_name, u.clast_name
+            FROM users u
+            WHERE u.cuserid = @userId`,
+            { userId: userId }
+        );
+
+        const notificationContent = `Your post was saved by ${userDetails[0]?.cfirst_name || 'Someone'}.`;
+
+        await executeNonQuery(
+            `INSERT INTO nt_notifications (cuserid, from_user_id, type, reference_id, reference_type, content, created_at)
+            VALUES (@userId, @fromUserId, 'saved', @referenceId, 'save', @content, GETDATE())`,
+            {
+                userId: userId,
+                fromUserId: userId,
+                referenceId: parseInt(id),
+                content: notificationContent
+            }
+        );
+
+        // send push notification for the post owner
+        const tokens = [
+            "eJKLNz3XQNyXc0lDxEQ4si:APA91bEGW9amRuw56MdElJNt-HaDJ2TpKCp1oF7uD020gsheDzDz4IQjcM83SVMiXm7VzSSSxPflJsOKD8CpP3imHNOcMNhdhCekSFXrFS3I9oC3lqaMsmg",
+            "cPO8CltPT3ef_GWoN0VLzp:APA91bFzQ7RKOnDvPC0GFLSe8j4jLx2iwjFjfTvRYw0yyI2yGoQza_BQzRJNTEGFo7U93G-CAgb9gO5KpCVT1XWtAh16lS2doHZT-zLhg1NxkXpaARzYeleavggG5hLgKnTPJkgY0z0R"
+        ];
+        let notifyObj = {
+            userUrl: tokens,
+            title: "Sheenlac Connect Notification",
+            body: `Your post was saved by ${userDetails[0]?.cfirst_name || 'Someone'}`
+        }
+        const token = await new FirebaseTokenService().sendSelectedUserNotify(notifyObj);
+        console.log('🔔 Notification sent:', token);
+
+
         res.json({ success: true, message: 'Post saved' });
     } catch (error) {
         console.error('Error saving post:', error);
@@ -1418,12 +1512,13 @@ export const reportPost = async (req: AuthRequest, res: Response) => {
 
         // send push notification for the post owner
         const tokens = [
+            "eJKLNz3XQNyXc0lDxEQ4si:APA91bEGW9amRuw56MdElJNt-HaDJ2TpKCp1oF7uD020gsheDzDz4IQjcM83SVMiXm7VzSSSxPflJsOKD8CpP3imHNOcMNhdhCekSFXrFS3I9oC3lqaMsmg",
             "cPO8CltPT3ef_GWoN0VLzp:APA91bFzQ7RKOnDvPC0GFLSe8j4jLx2iwjFjfTvRYw0yyI2yGoQza_BQzRJNTEGFo7U93G-CAgb9gO5KpCVT1XWtAh16lS2doHZT-zLhg1NxkXpaARzYeleavggG5hLgKnTPJkgY0z0R"
         ];
         let notifyObj = {
             userUrl: tokens,
-            title: "Progovex Post Notification",
-            body: `Your post was liked by ${userDetails[0]?.cfirst_name || 'Someone'}`
+            title: "Sheenlac Connect Notification",
+            body: `Your post was reported by ${userDetails[0]?.cfirst_name || 'Someone'}. Remarks: ${reportRemarks}`
         }
         const token = await new FirebaseTokenService().sendSelectedUserNotify(notifyObj);
         console.log('🔔 Notification sent:', token);
@@ -1815,6 +1910,40 @@ export const resharePost = async (req: AuthRequest, res: Response) => {
                 includeOriginal: includeOriginal ? 1 : 0
             }
         );
+
+        // send push notification for the post owner
+        const userDetails = await executeQuery<any>(
+            `SELECT u.cfirst_name, u.clast_name
+            FROM users u
+            WHERE u.cuserid = @userId`,
+            { userId: userId }
+        );
+
+        const notificationContent = `Your post was reshared by ${userDetails[0]?.cfirst_name || 'Someone'}. Remarks: ${comment}`;
+
+        await executeNonQuery(
+            `INSERT INTO nt_notifications (cuserid, from_user_id, type, reference_id, reference_type, content, created_at)
+            VALUES (@userId, @fromUserId, 'reshared', @referenceId, 'reshare', @content, GETDATE())`,
+            {
+                userId: userId,
+                fromUserId: userId,
+                referenceId: resharedPostId,
+                content: notificationContent
+            }
+        );
+
+        // send push notification for the post owner
+        const tokens = [
+            "eJKLNz3XQNyXc0lDxEQ4si:APA91bEGW9amRuw56MdElJNt-HaDJ2TpKCp1oF7uD020gsheDzDz4IQjcM83SVMiXm7VzSSSxPflJsOKD8CpP3imHNOcMNhdhCekSFXrFS3I9oC3lqaMsmg",
+            "cPO8CltPT3ef_GWoN0VLzp:APA91bFzQ7RKOnDvPC0GFLSe8j4jLx2iwjFjfTvRYw0yyI2yGoQza_BQzRJNTEGFo7U93G-CAgb9gO5KpCVT1XWtAh16lS2doHZT-zLhg1NxkXpaARzYeleavggG5hLgKnTPJkgY0z0R"
+        ];
+        let notifyObj = {
+            userUrl: tokens,
+            title: "Sheenlac Connect Notification",
+            body: notificationContent
+        }
+        const token = await new FirebaseTokenService().sendSelectedUserNotify(notifyObj);
+        console.log('🔔 Notification sent:', token);
 
         // Update share count on original post
         await executeNonQuery(
