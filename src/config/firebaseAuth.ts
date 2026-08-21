@@ -81,14 +81,14 @@ export class FirebaseTokenService {
             try {
               const notificationData = {
                 "message": {
-                  "token": deviceToken,
+                  "token": deviceToken.direct_url,
                   "notification": {
                       "title": req.title,
                       "body": req.body
                   }
                 }
               };
-              console.log("notificationData");
+              console.log("notificationData",notificationData);
               const fcmResponse = await fetch('https://fcm.googleapis.com/v1/projects/sheenlacnotifications/messages:send', {
                 method: 'POST',
                 headers: {
@@ -132,10 +132,10 @@ export class FirebaseTokenService {
           try {
             const notificationData = {
               "message": {
-                "token": "deviceToken",
+                "token": "all",
                 "notification": {
-                    "title": "New Post Notification",
-                    "body": "Sheenlac Connect Notification"
+                    "title": req.title,
+                    "body": req.body
                 },
               }
             };

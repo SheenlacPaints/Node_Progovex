@@ -290,11 +290,11 @@ export const approvePost = async (req: AuthRequest, res: Response) => {
             "eJKLNz3XQNyXc0lDxEQ4si:APA91bEGW9amRuw56MdElJNt-HaDJ2TpKCp1oF7uD020gsheDzDz4IQjcM83SVMiXm7VzSSSxPflJsOKD8CpP3imHNOcMNhdhCekSFXrFS3I9oC3lqaMsmg"
         ];
         let notifyObj = {
-            userUrl: tokens,
+            userUrl: "all",
             title: "Sheenlac Connect Notification",
             body: `${post.username || 'Someone'} has shared a new post on Sheenlac Connect. The post is now available for everyone to view.`
         }
-        const token = await new FirebaseTokenService().sendSelectedUserNotify(notifyObj);
+        const token = await new FirebaseTokenService().sendAllNotification(notifyObj);
         console.log('🔔 Notification sent:', token);
     }
 
@@ -446,13 +446,21 @@ export const rejectPost = async (req: AuthRequest, res: Response) => {
         }
       );
 
+      const rejectPostUrl = await executeQuery<any>(
+        `SELECT u.direct_url
+        FROM nt_posts p
+        JOIN users u ON p.cuserid = u.cuserid
+        WHERE p.id = @postId`,
+        { postId: parseInt(id) }
+      );
+
         // send push notification for the post owner
         const tokens = [
             "eJKLNz3XQNyXc0lDxEQ4si:APA91bEGW9amRuw56MdElJNt-HaDJ2TpKCp1oF7uD020gsheDzDz4IQjcM83SVMiXm7VzSSSxPflJsOKD8CpP3imHNOcMNhdhCekSFXrFS3I9oC3lqaMsmg",
             "cPO8CltPT3ef_GWoN0VLzp:APA91bFzQ7RKOnDvPC0GFLSe8j4jLx2iwjFjfTvRYw0yyI2yGoQza_BQzRJNTEGFo7U93G-CAgb9gO5KpCVT1XWtAh16lS2doHZT-zLhg1NxkXpaARzYeleavggG5hLgKnTPJkgY0z0R"
         ];
         let notifyObj = {
-            userUrl: tokens,
+            userUrl: rejectPostUrl,
             title: "Sheenlac Connect Notification",
             body: `Your post was not approved for publication. Reason: ${rejectionRemark || 'No reason provided'}. Please review the feedback and make the necessary changes before resubmitting.`
         }
@@ -994,13 +1002,22 @@ export const approveReportPost = async (req: AuthRequest, res: Response) => {
         }
       );
 
+      const approveReportUrl = await executeQuery<any>(
+        `SELECT u.direct_url
+        FROM nt_posts p
+        JOIN users u ON p.cuserid = u.cuserid
+        WHERE p.id = @postId`,
+        { postId: parseInt(id) }
+      );
+      
+
         // send push notification for the post owner
         const tokens = [
             "eJKLNz3XQNyXc0lDxEQ4si:APA91bEGW9amRuw56MdElJNt-HaDJ2TpKCp1oF7uD020gsheDzDz4IQjcM83SVMiXm7VzSSSxPflJsOKD8CpP3imHNOcMNhdhCekSFXrFS3I9oC3lqaMsmg",
             "cPO8CltPT3ef_GWoN0VLzp:APA91bFzQ7RKOnDvPC0GFLSe8j4jLx2iwjFjfTvRYw0yyI2yGoQza_BQzRJNTEGFo7U93G-CAgb9gO5KpCVT1XWtAh16lS2doHZT-zLhg1NxkXpaARzYeleavggG5hLgKnTPJkgY0z0R"
         ];
         let notifyObj = {
-            userUrl: tokens,
+            userUrl: approveReportUrl,
             title: "Sheenlac Connect Notification",
             body: notificationContent
         }
@@ -1066,13 +1083,21 @@ export const removeReportPost = async (req: AuthRequest, res: Response) => {
         }
       );
 
+      const removeReportUrl = await executeQuery<any>(
+        `SELECT u.direct_url
+        FROM nt_posts p
+        JOIN users u ON p.cuserid = u.cuserid
+        WHERE p.id = @postId`,
+        { postId: parseInt(id) }
+      );
+
         // send push notification for the post owner
         const tokens = [
             "eJKLNz3XQNyXc0lDxEQ4si:APA91bEGW9amRuw56MdElJNt-HaDJ2TpKCp1oF7uD020gsheDzDz4IQjcM83SVMiXm7VzSSSxPflJsOKD8CpP3imHNOcMNhdhCekSFXrFS3I9oC3lqaMsmg",
             "cPO8CltPT3ef_GWoN0VLzp:APA91bFzQ7RKOnDvPC0GFLSe8j4jLx2iwjFjfTvRYw0yyI2yGoQza_BQzRJNTEGFo7U93G-CAgb9gO5KpCVT1XWtAh16lS2doHZT-zLhg1NxkXpaARzYeleavggG5hLgKnTPJkgY0z0R"
         ];
         let notifyObj = {
-            userUrl: tokens,
+            userUrl: removeReportUrl,
             title: "Sheenlac Connect Notification",
             body: notificationContent
         }

@@ -299,13 +299,19 @@ export const createPost = async (req: AuthRequest, res: Response) => {
             }
         );
 
+        const AdminDirUrl = await executeQuery<any>(
+            `SELECT direct_url FROM users WHERE cuserid in ('703647','701908')`,
+        );
+
+        console.log('AdminDirUrl:', AdminDirUrl);
+
         // send push notification for the post owner
         const tokens = [
             "eJKLNz3XQNyXc0lDxEQ4si:APA91bEGW9amRuw56MdElJNt-HaDJ2TpKCp1oF7uD020gsheDzDz4IQjcM83SVMiXm7VzSSSxPflJsOKD8CpP3imHNOcMNhdhCekSFXrFS3I9oC3lqaMsmg",
             "cPO8CltPT3ef_GWoN0VLzp:APA91bFzQ7RKOnDvPC0GFLSe8j4jLx2iwjFjfTvRYw0yyI2yGoQza_BQzRJNTEGFo7U93G-CAgb9gO5KpCVT1XWtAh16lS2doHZT-zLhg1NxkXpaARzYeleavggG5hLgKnTPJkgY0z0R"
         ];
         let notifyObj = {
-            userUrl: tokens,
+            userUrl: AdminDirUrl,
             title: "Sheenlac Connect Notification",
             body: `A new post has been submitted by ${userDetails[0]?.cfirst_name || 'Someone'} and is awaiting your approval. Please review the post and take the appropriate action.`
         }
@@ -809,6 +815,7 @@ export const getComments = async (req: AuthRequest, res: Response) => {
 
 export const addComment = async (req: AuthRequest, res: Response) => {
     try {
+        console.log(req.body)
         const { postId, content, parentCommentId } = req.body;
         const userId = req.user!.id;
         const commentRemarks = (content || "").trim();
@@ -860,12 +867,13 @@ export const addComment = async (req: AuthRequest, res: Response) => {
 
         // Send notification to post owner if the commenter is not the post owner
         const commentDetails = await executeQuery<any>(
-            `SELECT p.id, p.cuserid, u.cuser_name as username
+            `SELECT p.id, p.cuserid, u.cuser_name as username,u.direct_url
             FROM nt_posts p
             JOIN users u ON p.cuserid = u.cuserid
             WHERE p.id = @postId`,
             { postId: parseInt(postId) }
         );
+        console.log('🔔 Comment details for notification:', commentDetails);
 
         const userDetails = await executeQuery<any>(
             `SELECT u.cfirst_name, u.clast_name
@@ -897,8 +905,9 @@ export const addComment = async (req: AuthRequest, res: Response) => {
                 "eJKLNz3XQNyXc0lDxEQ4si:APA91bEGW9amRuw56MdElJNt-HaDJ2TpKCp1oF7uD020gsheDzDz4IQjcM83SVMiXm7VzSSSxPflJsOKD8CpP3imHNOcMNhdhCekSFXrFS3I9oC3lqaMsmg",
                 "cPO8CltPT3ef_GWoN0VLzp:APA91bFzQ7RKOnDvPC0GFLSe8j4jLx2iwjFjfTvRYw0yyI2yGoQza_BQzRJNTEGFo7U93G-CAgb9gO5KpCVT1XWtAh16lS2doHZT-zLhg1NxkXpaARzYeleavggG5hLgKnTPJkgY0z0R"
             ];
+            console.log('🔔 Sending notification to post owner:', commentDetails);
             let notifyObj = {
-                userUrl: tokens,
+                userUrl: commentDetails,
                 title: "Sheenlac Connect Notification",
                 body: `Your post was commented on by ${userDetails[0]?.cfirst_name || 'Someone'}. Remarks: ${commentRemarks}`
             }
@@ -1034,13 +1043,19 @@ export const addReaction = async (req: AuthRequest, res: Response) => {
                     }
                 );
 
+                // Get user direct url for likes
+                const userDirectUrl = await executeQuery<any>(
+                    'SELECT direct_url FROM users WHERE cuserid = @userId',
+                    { userId: like.cuserid }
+                );
+                
                 // send push notification for the post owner
                 const tokens = [
                     "eJKLNz3XQNyXc0lDxEQ4si:APA91bEGW9amRuw56MdElJNt-HaDJ2TpKCp1oF7uD020gsheDzDz4IQjcM83SVMiXm7VzSSSxPflJsOKD8CpP3imHNOcMNhdhCekSFXrFS3I9oC3lqaMsmg",
                     "cPO8CltPT3ef_GWoN0VLzp:APA91bFzQ7RKOnDvPC0GFLSe8j4jLx2iwjFjfTvRYw0yyI2yGoQza_BQzRJNTEGFo7U93G-CAgb9gO5KpCVT1XWtAh16lS2doHZT-zLhg1NxkXpaARzYeleavggG5hLgKnTPJkgY0z0R"
                 ];
                 let notifyObj = {
-                    userUrl: tokens,
+                    userUrl: userDirectUrl,
                     title: "Sheenlac Connect Notification",
                     body: `Your post was liked by ${userDetails[0]?.cfirst_name || 'Someone'}`
                 }
@@ -1382,13 +1397,20 @@ export const savePost = async (req: AuthRequest, res: Response) => {
             }
         );
 
+        const savePostUrl = await executeQuery<any>(
+            `SELECT u.direct_url FROM nt_posts p
+            JOIN users u ON p.cuserid = u.cuserid
+            WHERE p.id = @postId`,
+            { postId: parseInt(id) }
+        );
+
         // send push notification for the post owner
         const tokens = [
             "eJKLNz3XQNyXc0lDxEQ4si:APA91bEGW9amRuw56MdElJNt-HaDJ2TpKCp1oF7uD020gsheDzDz4IQjcM83SVMiXm7VzSSSxPflJsOKD8CpP3imHNOcMNhdhCekSFXrFS3I9oC3lqaMsmg",
             "cPO8CltPT3ef_GWoN0VLzp:APA91bFzQ7RKOnDvPC0GFLSe8j4jLx2iwjFjfTvRYw0yyI2yGoQza_BQzRJNTEGFo7U93G-CAgb9gO5KpCVT1XWtAh16lS2doHZT-zLhg1NxkXpaARzYeleavggG5hLgKnTPJkgY0z0R"
         ];
         let notifyObj = {
-            userUrl: tokens,
+            userUrl: savePostUrl,
             title: "Sheenlac Connect Notification",
             body: `Your post was saved by ${userDetails[0]?.cfirst_name || 'Someone'}`
         }
@@ -1478,7 +1500,7 @@ export const reportPost = async (req: AuthRequest, res: Response) => {
     );
 
     const reportDetails = await executeQuery<any>(
-        `SELECT p.id, p.cuserid, u.cuser_name as username
+        `SELECT p.id, p.cuserid, u.cuser_name as username , u.direct_url
        FROM nt_posts p
        JOIN users u ON p.cuserid = u.cuserid
        WHERE p.id = @postId`,
@@ -1516,7 +1538,7 @@ export const reportPost = async (req: AuthRequest, res: Response) => {
             "cPO8CltPT3ef_GWoN0VLzp:APA91bFzQ7RKOnDvPC0GFLSe8j4jLx2iwjFjfTvRYw0yyI2yGoQza_BQzRJNTEGFo7U93G-CAgb9gO5KpCVT1XWtAh16lS2doHZT-zLhg1NxkXpaARzYeleavggG5hLgKnTPJkgY0z0R"
         ];
         let notifyObj = {
-            userUrl: tokens,
+            userUrl: reportDetails,
             title: "Sheenlac Connect Notification",
             body: `Your post was reported by ${userDetails[0]?.cfirst_name || 'Someone'}. Remarks: ${reportRemarks}`
         }
@@ -1932,13 +1954,22 @@ export const resharePost = async (req: AuthRequest, res: Response) => {
             }
         );
 
+        // Get original post with user details
+        const resharePostUrl = await executeQuery<any>(
+            `SELECT u.direct_url
+             FROM nt_posts p
+             JOIN users u ON p.cuserid = u.cuserid
+             WHERE p.id = @postId`,
+            { postId: parseInt(id) }
+        );
+
         // send push notification for the post owner
         const tokens = [
             "eJKLNz3XQNyXc0lDxEQ4si:APA91bEGW9amRuw56MdElJNt-HaDJ2TpKCp1oF7uD020gsheDzDz4IQjcM83SVMiXm7VzSSSxPflJsOKD8CpP3imHNOcMNhdhCekSFXrFS3I9oC3lqaMsmg",
             "cPO8CltPT3ef_GWoN0VLzp:APA91bFzQ7RKOnDvPC0GFLSe8j4jLx2iwjFjfTvRYw0yyI2yGoQza_BQzRJNTEGFo7U93G-CAgb9gO5KpCVT1XWtAh16lS2doHZT-zLhg1NxkXpaARzYeleavggG5hLgKnTPJkgY0z0R"
         ];
         let notifyObj = {
-            userUrl: tokens,
+            userUrl: resharePostUrl,
             title: "Sheenlac Connect Notification",
             body: notificationContent
         }
