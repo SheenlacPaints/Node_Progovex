@@ -1,5 +1,6 @@
 import { GoogleAuth } from 'google-auth-library';
 import { AuthRequest } from '../middleware/auth';
+const fetch = require('node-fetch');
 
 export class FirebaseTokenService {
 
