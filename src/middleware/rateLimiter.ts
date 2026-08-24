@@ -41,3 +41,15 @@ export const mediaLimiter = rateLimit({
         return req.path === '/health' || req.path === '/cors-test';
     }
 });
+
+// Higher limit for chat routes (chat page is HTTP-chatty)
+export const chatLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000,
+    max: 500,
+    message: 'Too many chat requests, please slow down',
+    standardHeaders: true,
+    legacyHeaders: false,
+    keyGenerator: (req: Request) => {
+        return req.ip || req.socket.remoteAddress || 'unknown';
+    }
+});

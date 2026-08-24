@@ -89,6 +89,7 @@ router.post('/:id/icon', upload.single('file'), async (req: AuthRequest, res: Re
 });
 
 router.get('/', ChatController.listChats);
+router.get('/search', ChatController.searchChats);
 router.get('/users', ChatController.searchUsers);
 router.post('/dm', ChatController.createDM);
 router.post('/group', ChatController.createGroup);
@@ -104,6 +105,7 @@ router.patch('/:id/members/:userId', ChatController.updateMemberRole);
 router.delete('/:id/members/:userId', ChatController.removeMember);
 
 router.patch('/:id', ChatController.updateConversation);
+router.delete('/:id/hide', ChatController.deleteChat);
 router.delete('/:id', ChatController.leaveConversation);
 
 export default router;
