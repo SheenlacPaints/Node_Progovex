@@ -214,6 +214,8 @@ export class ChatController {
                 reply_to_message_id: replyToId || null
             });
 
+            await ChatDbService.unhideForNewMessage(convId, userId);
+
             const senders = await ChatDbService.getUsersByIds([userId]);
             const sender = senders && senders.length > 0 ? senders[0] : null;
             let reply_to = null;

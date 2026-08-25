@@ -172,8 +172,8 @@ export class ChatDbService {
             if (HAS_DELETED_FOR_USER) {
                 await executeNonQuery(
                     `UPDATE nt_chat_conversation_members SET deleted_for_user = 0
-                     WHERE conversation_id = @convId AND user_id IN (@lo, @hi) AND deleted_for_user = 1`,
-                    { convId, lo, hi }
+                     WHERE conversation_id = @convId AND user_id = @userA AND deleted_for_user = 1`,
+                    { convId, userA }
                 );
             }
             return convId;
@@ -371,6 +371,15 @@ export class ChatDbService {
         return rows && rows.length > 0;
     }
 
+    static async unhideForNewMessage(conversationId: number, senderId: number): Promise<void> {
+        if (!HAS_DELETED_FOR_USER) return;
+        await executeNonQuery(
+            `UPDATE nt_chat_conversation_members SET deleted_for_user = 0
+             WHERE conversation_id = @convId AND user_id <> @senderId AND deleted_for_user = 1`,
+            { convId: conversationId, senderId }
+        );
+    }
+
     // ==================== MESSAGES ====================
 
     static async getMessages(conversationId: number, limit = 200, viewerId?: number): Promise<any[]> {
@@ -482,11 +491,11 @@ export class ChatDbService {
         const params: any = { me: viewerId || 0 };
         messageIds.forEach((id, i) => params[`id${i}`] = id);
         const rows = await executeQuery<any>(
-            `SELECT message_id, emoji, COUNT(*) as count,
-                    SUM(CASE WHEN user_id = @me THEN 1 ELSE 0 END) as reacted
-             FROM nt_chat_message_reactions
-             WHERE message_id IN (${placeholders})
-             GROUP BY message_id, emoji`,
+            `SELECT r.message_id, r.emoji, COUNT(*) as count,
+                    SUM(CASE WHEN r.user_id = @me THEN 1 ELSE 0 END) as reacted
+             FROM nt_chat_message_reactions r
+             WHERE r.message_id IN (${placeholders})
+             GROUP BY r.message_id, r.emoji`,
             params
         );
         const map: Record<number, any[]> = {};
@@ -497,6 +506,22 @@ export class ChatDbService {
                 reacted: !!r.reacted
             });
         });
+
+        // Fetch individual user names for each reaction
+        for (const msgId of Object.keys(map).map(Number)) {
+            for (const reaction of map[msgId]) {
+                const userRows = await executeQuery<any>(
+                    `SELECT COALESCE(NULLIF(LTRIM(RTRIM(u.cuser_name)), ''),
+                         LTRIM(RTRIM(ISNULL(u.cfirst_name, '') + ' ' + ISNULL(u.clast_name, ''))),
+                         'User') as user_name
+                     FROM nt_chat_message_reactions r
+                     LEFT JOIN users u ON u.ID = r.user_id
+                     WHERE r.message_id = @m AND r.emoji = @e`,
+                    { m: msgId, e: reaction.emoji }
+                );
+                reaction.userNames = (userRows || []).map((u: any) => u.user_name).join(', ');
+            }
+        }
         return map;
     }
 

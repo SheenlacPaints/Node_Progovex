@@ -2,6 +2,7 @@ import { Request, Response } from 'express';
 import { AuthRequest } from '../middleware/auth';
 import { MeetingDbService } from '../services/meetingDb.service';
 import { sendMeetingInviteEmail, formatMeetingDateTime } from '../services/mail.service';
+import { resolveUserId } from '../services/chatIdentity.service';
 
 function toInt(val: any): number | undefined {
     if (val === undefined || val === null) return undefined;
@@ -61,7 +62,8 @@ export class MeetingController {
 
     static async createMeeting(req: AuthRequest, res: Response): Promise<void> {
         try {
-            const userId = req.user?.id || req.user?.cuserid;
+            const rawUserId = req.user?.id || req.user?.cuserid;
+            const userId = await resolveUserId(rawUserId);
             if (!userId) { res.status(401).json({ success: false, message: 'Unauthorized' }); return; }
 
             const meeting = await MeetingDbService.createMeeting({
@@ -165,7 +167,8 @@ export class MeetingController {
                 res.status(400).json({ success: false, message: 'Invalid password' }); return;
             }
 
-            const userId = toInt(req.user?.id || req.user?.cuserid);
+            const rawUserId = req.user?.id || req.user?.cuserid;
+            const userId = await resolveUserId(rawUserId);
             const displayName = req.user?.fullName || req.user?.username || req.body.display_name || 'Guest';
             const email = req.user?.email || req.body.email || null;
 
@@ -209,7 +212,8 @@ export class MeetingController {
                 await MeetingDbService.removeParticipant(meeting.id, socketId);
             }
 
-            const userId = toInt(req.user?.id || req.user?.cuserid);
+            const rawUserId = req.user?.id || req.user?.cuserid;
+            const userId = await resolveUserId(rawUserId);
             await MeetingDbService.logMeeting(meeting.id, userId, 'left');
 
             res.json({ success: true });
@@ -224,7 +228,8 @@ export class MeetingController {
             const meeting = await MeetingDbService.getMeetingByCode(req.params.code);
             if (!meeting) { res.status(404).json({ success: false, message: 'Meeting not found' }); return; }
 
-            const userId = toInt(req.user?.id || req.user?.cuserid);
+            const rawUserId = req.user?.id || req.user?.cuserid;
+            const userId = await resolveUserId(rawUserId);
             if (toInt(meeting.host_user_id) !== userId) {
                 res.status(403).json({ success: false, message: 'Only host can end meeting' }); return;
             }
@@ -315,7 +320,8 @@ export class MeetingController {
 
     static async getUserMeetings(req: AuthRequest, res: Response): Promise<void> {
         try {
-            const userId = toInt(req.user?.id || req.user?.cuserid);
+            const rawUserId = req.user?.id || req.user?.cuserid;
+            const userId = await resolveUserId(rawUserId);
             if (!userId) { res.status(401).json({ success: false, message: 'Unauthorized' }); return; }
 
             const meetings = await MeetingDbService.getUserMeetings(userId);
@@ -327,7 +333,8 @@ export class MeetingController {
 
     static async getUpcomingMeetings(req: AuthRequest, res: Response): Promise<void> {
         try {
-            const userId = toInt(req.user?.id || req.user?.cuserid);
+            const rawUserId = req.user?.id || req.user?.cuserid;
+            const userId = await resolveUserId(rawUserId);
             if (!userId) { res.status(401).json({ success: false, message: 'Unauthorized' }); return; }
 
             const upcoming = await MeetingDbService.getUpcomingMeetings(userId);
@@ -341,7 +348,8 @@ export class MeetingController {
 
     static async getMeetingStats(req: AuthRequest, res: Response): Promise<void> {
         try {
-            const userId = toInt(req.user?.id || req.user?.cuserid);
+            const rawUserId = req.user?.id || req.user?.cuserid;
+            const userId = await resolveUserId(rawUserId);
             if (!userId) { res.status(401).json({ success: false, message: 'Unauthorized' }); return; }
 
             const stats = await MeetingDbService.getMeetingStats(userId);
@@ -369,7 +377,8 @@ export class MeetingController {
             const meeting = await MeetingDbService.getMeetingByCode(req.params.code);
             if (!meeting) { res.status(404).json({ success: false, message: 'Meeting not found' }); return; }
 
-            const userId = toInt(req.user?.id || req.user?.cuserid);
+            const rawUserId = req.user?.id || req.user?.cuserid;
+            const userId = await resolveUserId(rawUserId);
             const email = req.body.email;
             if (!email) { res.status(400).json({ success: false, message: 'Email required' }); return; }
 
@@ -389,7 +398,8 @@ export class MeetingController {
             const meeting = await MeetingDbService.getMeetingByCode(req.params.code);
             if (!meeting) { res.status(404).json({ success: false, message: 'Meeting not found' }); return; }
 
-            const userId = toInt(req.user?.id || req.user?.cuserid);
+            const rawUserId = req.user?.id || req.user?.cuserid;
+            const userId = await resolveUserId(rawUserId);
             const emails = req.body.emails;
             if (!emails || !Array.isArray(emails) || emails.length === 0) {
                 res.status(400).json({ success: false, message: 'Emails array required' }); return;
@@ -420,7 +430,8 @@ export class MeetingController {
 
     static async scheduleMeeting(req: AuthRequest, res: Response): Promise<void> {
         try {
-            const userId = toInt(req.user?.id || req.user?.cuserid);
+            const rawUserId = req.user?.id || req.user?.cuserid;
+            const userId = await resolveUserId(rawUserId);
             if (!userId) { res.status(401).json({ success: false, message: 'Unauthorized' }); return; }
 
             const meeting = await MeetingDbService.createMeeting({
@@ -500,7 +511,8 @@ export class MeetingController {
             const meeting = await MeetingDbService.getMeetingByCode(req.params.code);
             if (!meeting) { res.status(404).json({ success: false, message: 'Meeting not found' }); return; }
 
-            const userId = toInt(req.user?.id || req.user?.cuserid);
+            const rawUserId = req.user?.id || req.user?.cuserid;
+            const userId = await resolveUserId(rawUserId);
             if (toInt(meeting.host_user_id) !== userId) {
                 res.status(403).json({ success: false, message: 'Only host can update settings' }); return;
             }
@@ -540,7 +552,8 @@ export class MeetingController {
             const meeting = await MeetingDbService.getMeetingByCode(req.params.code);
             if (!meeting) { res.status(404).json({ success: false, message: 'Meeting not found' }); return; }
 
-            const userId = toInt(req.user?.id || req.user?.cuserid);
+            const rawUserId = req.user?.id || req.user?.cuserid;
+            const userId = await resolveUserId(rawUserId);
             if (toInt(meeting.host_user_id) !== userId) {
                 res.status(403).json({ success: false, message: 'Only host can cancel' }); return;
             }
@@ -564,7 +577,8 @@ export class MeetingController {
             const meeting = await MeetingDbService.getMeetingByCode(req.params.code);
             if (!meeting) { res.status(404).json({ success: false, message: 'Meeting not found' }); return; }
 
-            const userId = toInt(req.user?.id || req.user?.cuserid);
+            const rawUserId = req.user?.id || req.user?.cuserid;
+            const userId = await resolveUserId(rawUserId);
             if (toInt(meeting.host_user_id) !== userId) {
                 res.status(403).json({ success: false, message: 'Only host can delete meeting' }); return;
             }
@@ -587,7 +601,8 @@ export class MeetingController {
             const meeting = await MeetingDbService.getMeetingByCode(req.params.code);
             if (!meeting) { res.status(404).json({ success: false, message: 'Meeting not found' }); return; }
 
-            const userId = toInt(req.user?.id || req.user?.cuserid);
+            const rawUserId = req.user?.id || req.user?.cuserid;
+            const userId = await resolveUserId(rawUserId);
             if (toInt(meeting.host_user_id) !== userId) {
                 res.status(403).json({ success: false, message: 'Only host can transfer' }); return;
             }
@@ -667,7 +682,8 @@ export class MeetingController {
             const meeting = await MeetingDbService.getMeetingByCode(req.params.code);
             if (!meeting) { res.status(404).json({ success: false, message: 'Meeting not found' }); return; }
 
-            const userId = toInt(req.user?.id || req.user?.cuserid);
+            const rawUserId = req.user?.id || req.user?.cuserid;
+            const userId = await resolveUserId(rawUserId);
             const userName = req.user?.fullName || req.user?.username || 'Anonymous';
             const { emoji } = req.body;
 
@@ -691,7 +707,8 @@ export class MeetingController {
             const meeting = await MeetingDbService.getMeetingByCode(req.params.code);
             if (!meeting) { res.status(404).json({ success: false, message: 'Meeting not found' }); return; }
 
-            const userId = toInt(req.user?.id || req.user?.cuserid);
+            const rawUserId = req.user?.id || req.user?.cuserid;
+            const userId = await resolveUserId(rawUserId);
             const userName = req.user?.fullName || req.user?.username || 'Anonymous';
             const { is_raised, socket_id } = req.body;
 
@@ -727,7 +744,8 @@ export class MeetingController {
 
     static async getCalendarMeetings(req: AuthRequest, res: Response): Promise<void> {
         try {
-            const userId = toInt(req.user?.id || req.user?.cuserid);
+            const rawUserId = req.user?.id || req.user?.cuserid;
+            const userId = await resolveUserId(rawUserId);
             if (!userId) { res.status(401).json({ success: false, message: 'Unauthorized' }); return; }
 
             const month = toInt(req.query.month) || new Date().getMonth() + 1;
