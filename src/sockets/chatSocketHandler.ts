@@ -111,8 +111,6 @@ export function registerChatSocketHandlers(io: Server): void {
                     reply_to_message_id: replyToId || null
                 });
 
-                await ChatDbService.unhideForNewMessage(convId, uId);
-
                 const senders = await ChatDbService.getUsersByIds([uId]);
                 const sender = senders && senders.length > 0 ? senders[0] : null;
 
