@@ -75,6 +75,23 @@ export class ChatController {
         }
     }
 
+    // GET /node/api/chats/search?q=...
+    static async searchChats(req: AuthRequest, res: Response): Promise<void> {
+        try {
+            const userId = toInt(req.user!.id)!;
+            const q = (req.query.q as string) || '';
+            if (!q.trim()) {
+                res.json({ success: true, results: [] });
+                return;
+            }
+            const results = await ChatDbService.searchChats(userId, q);
+            res.json({ success: true, results });
+        } catch (error) {
+            console.error('[Chat] searchChats error:', error);
+            res.status(500).json({ error: 'Failed to search chats' });
+        }
+    }
+
     // POST /node/api/chats/dm { userId }
     static async createDM(req: AuthRequest, res: Response): Promise<void> {
         try {
@@ -117,6 +134,7 @@ export class ChatController {
             });
             const conversation = await ChatDbService.getConversation(conversationId);
             const members = await ChatDbService.getMembers(conversationId);
+            res.json({ success: true, conversation: { ...conversation, members } });
             const io = getIo(req);
             if (io) {
                 members.forEach((m: any) => {
@@ -125,7 +143,6 @@ export class ChatController {
                     }
                 });
             }
-            res.json({ success: true, conversation: { ...conversation, members } });
         } catch (error) {
             console.error('[Chat] createGroup error:', error);
             res.status(500).json({ error: 'Failed to create group' });
@@ -339,8 +356,36 @@ export class ChatController {
             }
             const role = req.body.role === 'admin' ? 'admin' : 'member';
             await ChatDbService.addMember(convId, targetId, role);
+
+            // Unhide if previously soft-deleted
+            await ChatDbService.unhideConversationForUser(convId, targetId);
+
             const members = await ChatDbService.getMembers(convId);
             res.json({ success: true, members });
+
+            // Broadcast member addition to all members via socket (after response to avoid blocking)
+            const io = getIo(req);
+            if (io) {
+                try {
+                    const addedUsers = await ChatDbService.getUsersByIds([targetId]);
+                    const addedUser = addedUsers?.[0];
+                    io.to(`chat_${convId}`).emit('chat:member-added', {
+                        conversationId: convId,
+                        addedUser: { user_id: targetId, full_name: addedUser?.full_name || 'User' },
+                        members
+                    });
+                    const conversation = await ChatDbService.getConversation(convId);
+                    io.to(`user_${targetId}`).emit('chat:new', { conversation: { ...conversation, members } });
+                    for (const m of members) {
+                        const mid = toInt(m.user_id);
+                        if (mid && mid !== userId && mid !== targetId) {
+                            io.to(`user_${mid}`).emit('chat:updated', { conversationId: convId });
+                        }
+                    }
+                } catch (socketErr) {
+                    console.error('[Chat] addMember socket broadcast error:', socketErr);
+                }
+            }
         } catch (error) {
             console.error('[Chat] addMember error:', error);
             res.status(500).json({ error: 'Failed to add member' });
@@ -445,7 +490,7 @@ export class ChatController {
         }
     }
 
-    // DELETE /node/api/chats/:id  (leave, or delete whole conversation if owner)
+    // DELETE /node/api/chats/:id  (leave group, or delete for self)
     static async leaveConversation(req: AuthRequest, res: Response): Promise<void> {
         try {
             const userId = toInt(req.user!.id)!;
@@ -456,15 +501,73 @@ export class ChatController {
             if (!conversation) return void res.status(404).json({ error: 'Conversation not found' });
 
             const myRole = await ChatDbService.getMemberRole(convId, userId);
-            if (myRole === 'owner' || conversation.conversation_type === 'dm') {
+
+            // Owner deleting the entire group for everyone
+            if (myRole === 'owner' && conversation.conversation_type === 'group') {
+                const members = await ChatDbService.getMembers(convId);
                 await ChatDbService.deleteConversation(convId);
+                const io = getIo(req);
+                if (io) {
+                    for (const m of members) {
+                        const mid = toInt(m.user_id);
+                        if (mid && mid !== userId) {
+                            io.to(`user_${mid}`).emit('chat:deleted', { conversationId: convId });
+                        }
+                    }
+                }
                 return void res.json({ success: true, deleted: true });
             }
+
+            // DM: soft-delete for current user (hard-delete only when both users hide it)
+            if (conversation.conversation_type === 'dm') {
+                const result = await ChatDbService.hideConversationForUser(convId, userId);
+                return void res.json({ success: true, hidden: true, hardDeleted: result.hardDeleted });
+            }
+
+            // Non-owner leaving a group: remove member
             await ChatDbService.removeMember(convId, userId);
             res.json({ success: true, left: true });
         } catch (error) {
             console.error('[Chat] leaveConversation error:', error);
             res.status(500).json({ error: 'Failed to leave conversation' });
+        }
+    }
+
+    // DELETE /node/api/chats/:id/hide  (soft-delete for current user)
+    static async deleteChat(req: AuthRequest, res: Response): Promise<void> {
+        try {
+            const userId = toInt(req.user!.id)!;
+            const convId = toInt(req.params.id);
+            if (!convId) return void res.status(400).json({ error: 'Invalid conversation id' });
+
+            const conversation = await ChatDbService.getConversation(convId);
+            if (!conversation) return void res.status(404).json({ error: 'Conversation not found' });
+
+            const myRole = await ChatDbService.getMemberRole(convId, userId);
+            if (!myRole) return void res.status(403).json({ error: 'You are not a member' });
+
+            // Owner of a group = hard delete for everyone
+            if (myRole === 'owner' && conversation.conversation_type === 'group') {
+                const members = await ChatDbService.getMembers(convId);
+                await ChatDbService.deleteConversation(convId);
+                const io = getIo(req);
+                if (io) {
+                    for (const m of members) {
+                        const mid = toInt(m.user_id);
+                        if (mid && mid !== userId) {
+                            io.to(`user_${mid}`).emit('chat:deleted', { conversationId: convId });
+                        }
+                    }
+                }
+                return void res.json({ success: true, deleted: true });
+            }
+
+            // Everyone else: soft-delete for current user only
+            const result = await ChatDbService.hideConversationForUser(convId, userId);
+            res.json({ success: true, hidden: true, hardDeleted: result.hardDeleted });
+        } catch (error) {
+            console.error('[Chat] deleteChat error:', error);
+            res.status(500).json({ error: 'Failed to delete conversation' });
         }
     }
 }

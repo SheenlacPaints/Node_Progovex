@@ -268,7 +268,7 @@ export class MeetingDbService {
         duration_minutes?: number;
     }): Promise<any> {
         const meeting_code = generateCode();
-        const meeting_password = data.password || generatePassword();
+        const meeting_password = data.password ? data.password : null;
         const hostId = toInt(data.host_user_id);
 
         const result = await executeQuery<any>(
@@ -501,6 +501,13 @@ export class MeetingDbService {
             `SELECT m.*, u.cuser_name as host_name,
                 (SELECT COUNT(*) FROM nt_meeting_participants WHERE meeting_id = m.id AND status IN ('joined', 'invited')) as participant_count,
                 (SELECT COUNT(*) FROM nt_meeting_participants WHERE meeting_id = m.id AND status = 'joined') as active_participants,
+                STUFF((
+                    SELECT ', ' + ISNULL(p_user.cuser_name, 'Unknown')
+                    FROM nt_meeting_participants p_tbl
+                    LEFT JOIN users p_user ON p_tbl.user_id = p_user.id
+                    WHERE p_tbl.meeting_id = m.id AND p_tbl.status IN ('joined', 'invited')
+                    FOR XML PATH('')
+                ), 1, 2, '') as participant_names,
                 CASE WHEN m.status IN ('completed', 'cancelled') THEN 1
                     WHEN m.status = 'active' AND m.actual_end IS NOT NULL THEN 1
                     WHEN m.status = 'scheduled' AND m.start_time IS NOT NULL
@@ -520,6 +527,34 @@ export class MeetingDbService {
                 m.start_time DESC, m.created_at DESC`,
             { uid: userId }
         );
+    }
+
+    static async resolveUserName(userId: any): Promise<string> {
+        if (!userId) return 'Guest';
+        const numVal = parseInt(String(userId), 10);
+        const searchVal = isNaN(numVal) ? userId : numVal;
+        try {
+            const rows = await executeQuery<any>(
+                `SELECT TOP 1 cuser_name FROM users WHERE id = @val OR cuserid = @val`,
+                { val: searchVal }
+            );
+            if (rows.length > 0 && rows[0].cuser_name) {
+                console.log(`[MeetingDB] Resolved name: "${rows[0].cuser_name}" for userId=${userId} (searched as ${searchVal})`);
+                return rows[0].cuser_name;
+            }
+            const strRows = await executeQuery<any>(
+                `SELECT TOP 1 cuser_name FROM users WHERE CAST(id AS VARCHAR) = @sval OR CAST(cuserid AS VARCHAR) = @sval`,
+                { sval: String(userId) }
+            );
+            if (strRows.length > 0 && strRows[0].cuser_name) {
+                console.log(`[MeetingDB] Resolved name (string): "${strRows[0].cuser_name}" for userId=${userId}`);
+                return strRows[0].cuser_name;
+            }
+        } catch (e) {
+            console.error('[MeetingDB] Error resolving user name:', e);
+        }
+        console.warn(`[MeetingDB] Could not resolve name for userId=${userId}, returning Guest`);
+        return 'Guest';
     }
 
     static async searchUsers(query: string): Promise<any[]> {
@@ -578,9 +613,10 @@ export class MeetingDbService {
         return results[0];
     }
 
-    static async addParticipants(meetingId: number, userIds: number[]): Promise<void> {
+    static async addParticipants(meetingId: number, userIds: any[]): Promise<void> {
+        const { resolveUserId } = await import('./chatIdentity.service');
         for (const uid of userIds) {
-            const id = toInt(uid);
+            const id = await resolveUserId(uid);
             if (!id) continue;
             const existing = await executeQuery<any>(
                 `SELECT id FROM nt_meeting_participants WHERE meeting_id = @mid AND user_id = @uid`,

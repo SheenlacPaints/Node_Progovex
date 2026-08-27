@@ -1,7 +1,6 @@
 import { google } from 'googleapis';
 
 const SCOPES = [
-  'openid',
   'https://www.googleapis.com/auth/gmail.modify',
   'https://www.googleapis.com/auth/gmail.compose',
   'https://www.googleapis.com/auth/gmail.labels',
@@ -28,11 +27,15 @@ export interface UserProfile {
 export class AuthService {
   private oauth2Client: any = null;
 
+  private getRedirectUri(): string {
+    return process.env.GOOGLE_REDIRECT_URI || '';
+  }
+
   private getClient(): any {
     if (!this.oauth2Client) {
       const clientId = process.env.GOOGLE_CLIENT_ID;
       const clientSecret = process.env.GOOGLE_CLIENT_SECRET;
-      const redirectUri = process.env.GOOGLE_REDIRECT_URI;
+      const redirectUri = this.getRedirectUri();
 
       if (!clientId || !clientSecret) {
         throw new Error(
@@ -47,7 +50,7 @@ export class AuthService {
 
   getAuthUrl(state?: string): string {
     const client = this.getClient();
-    const redirectUri = process.env.GOOGLE_REDIRECT_URI;
+    const redirectUri = this.getRedirectUri();
     console.log('[GmailAuth] Generating OAuth URL with redirect_uri:', redirectUri);
     const params: any = {
       access_type: 'offline',
@@ -65,7 +68,7 @@ export class AuthService {
     const client = new google.auth.OAuth2(
       process.env.GOOGLE_CLIENT_ID,
       process.env.GOOGLE_CLIENT_SECRET,
-      process.env.GOOGLE_REDIRECT_URI
+      this.getRedirectUri()
     );
     const { tokens } = await client.getToken(code);
     return tokens as OAuthTokens;
@@ -110,7 +113,7 @@ export class AuthService {
   createClientWithTokens(tokens: OAuthTokens): any {
     const clientId = process.env.GOOGLE_CLIENT_ID;
     const clientSecret = process.env.GOOGLE_CLIENT_SECRET;
-    const redirectUri = process.env.GOOGLE_REDIRECT_URI;
+    const redirectUri = this.getRedirectUri();
 
     const client = new google.auth.OAuth2(clientId, clientSecret, redirectUri);
     client.setCredentials(tokens);

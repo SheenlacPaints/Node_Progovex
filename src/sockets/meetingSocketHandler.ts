@@ -7,6 +7,7 @@ interface MeetingUser {
     userId?: number;
     name: string;
     meetingCode: string;
+    joinedAt: number;
 }
 
 const meetingRooms = new Map<string, Map<string, MeetingUser>>();
@@ -23,11 +24,37 @@ function broadcastParticipantCount(io: Server, meetingCode: string): void {
     io.to(`meeting_${meetingCode}`).emit('meeting:participant-count', { meetingCode, count });
 }
 
+function cleanupStaleRooms(): void {
+    const now = Date.now();
+    const STALE_THRESHOLD = 60 * 60 * 1000;
+    for (const [code, room] of meetingRooms.entries()) {
+        if (room.size === 0) {
+            meetingRooms.delete(code);
+        } else {
+            let allStale = true;
+            for (const [sid, user] of room) {
+                if (now - user.joinedAt < STALE_THRESHOLD) {
+                    allStale = false;
+                    break;
+                }
+            }
+            if (allStale) {
+                console.log(`[MeetingSocket] Cleaning stale room ${code} (${room.size} ghost participants)`);
+                meetingRooms.delete(code);
+            }
+        }
+    }
+}
+
 export function registerMeetingSocketHandlers(io: Server): void {
+
+    setInterval(cleanupStaleRooms, 5 * 60 * 1000);
 
     io.on('connection', (socket: Socket) => {
         const token = socket.handshake.auth.token;
         let currentUser: MeetingUser | null = null;
+
+        console.log(`[MeetingSocket] New connection: ${socket.id}`);
 
         // JOIN MEETING
         socket.on('join-meeting', async (data: { meetingCode: string; user?: any }) => {
@@ -38,13 +65,28 @@ export function registerMeetingSocketHandlers(io: Server): void {
             }
 
             const room = meetingRooms.get(meetingCode)!;
-            const existingUser = room.get(socket.id);
+            const rawUserId = user?.id || user?.cuserid || null;
+            const rawName = user?.name || user?.fullName || user?.username || 'Guest';
+
+            let resolvedName = rawName;
+            console.log(`[MeetingSocket] Resolving name for userId=${rawUserId}, rawName=${rawName}`);
+            if (rawUserId) {
+                try {
+                    const dbName = await MeetingDbService.resolveUserName(rawUserId);
+                    console.log(`[MeetingSocket] resolveUserName(${rawUserId}) returned: "${dbName}"`);
+                    if (dbName && dbName !== 'Guest') resolvedName = dbName;
+                } catch (e) {
+                    console.error('[MeetingSocket] Name resolve error:', e);
+                }
+            }
+            console.log(`[MeetingSocket] Final resolved name: "${resolvedName}" for userId=${rawUserId}`);
 
             currentUser = {
                 socketId: socket.id,
-                userId: user?.id || user?.cuserid || null,
-                name: user?.name || user?.fullName || user?.username || 'Guest',
-                meetingCode
+                userId: rawUserId,
+                name: resolvedName,
+                meetingCode,
+                joinedAt: Date.now()
             };
 
             room.set(socket.id, currentUser);
@@ -62,9 +104,15 @@ export function registerMeetingSocketHandlers(io: Server): void {
                 user: { name: currentUser.name, id: currentUser.userId }
             });
 
+            socket.emit('meeting:self-joined', {
+                socketId: socket.id,
+                resolvedName: currentUser.name,
+                userId: currentUser.userId
+            });
+
             broadcastParticipantCount(io, meetingCode);
 
-            console.log(`[MeetingSocket] ${currentUser.name} joined meeting ${meetingCode}`);
+            console.log(`[MeetingSocket] ${currentUser.name} joined ${meetingCode} (${room.size} participants)`);
         });
 
         // WEBRTC SIGNALING - OFFER
@@ -243,6 +291,11 @@ export function registerMeetingSocketHandlers(io: Server): void {
             if (targetSocket) {
                 targetSocket.leave(`meeting_${data.meetingCode}`);
             }
+            const room = meetingRooms.get(data.meetingCode);
+            if (room) {
+                room.delete(data.targetSocketId);
+                broadcastParticipantCount(io, data.meetingCode);
+            }
         });
 
         socket.on('meeting:end', (data: { meetingCode: string }) => {
@@ -281,11 +334,12 @@ export function registerMeetingSocketHandlers(io: Server): void {
                 console.error('[MeetingSocket] Error on leave:', err);
             }
 
-            console.log(`[MeetingSocket] ${user?.name || socket.id} left meeting ${data.meetingCode}`);
+            console.log(`[MeetingSocket] ${user?.name || socket.id} left ${data.meetingCode} (${room?.size || 0} remaining)`);
         });
 
         // DISCONNECT
         socket.on('disconnect', async () => {
+            console.log(`[MeetingSocket] Disconnect: ${socket.id}`);
             for (const [meetingCode, room] of meetingRooms.entries()) {
                 const user = room.get(socket.id);
                 if (user) {
@@ -313,7 +367,7 @@ export function registerMeetingSocketHandlers(io: Server): void {
                         console.error('[MeetingSocket] Error on disconnect:', err);
                     }
 
-                    console.log(`[MeetingSocket] ${user.name} disconnected from ${meetingCode}`);
+                    console.log(`[MeetingSocket] ${user.name} disconnected from ${meetingCode} (${room.size} remaining)`);
                     break;
                 }
             }

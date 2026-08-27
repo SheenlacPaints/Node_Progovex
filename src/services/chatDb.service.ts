@@ -6,6 +6,8 @@ function toInt(val: any): number | undefined {
     return isNaN(n) ? undefined : n;
 }
 
+let HAS_DELETED_FOR_USER = false;
+
 export class ChatDbService {
 
     static async ensureTables(): Promise<void> {
@@ -49,6 +51,8 @@ export class ChatDbService {
                  CREATE INDEX IX_chat_messages_conv ON nt_chat_messages (conversation_id)`,
                 `IF COL_LENGTH('nt_chat_messages', 'reply_to_message_id') IS NULL
                  ALTER TABLE nt_chat_messages ADD reply_to_message_id INT NULL`,
+                `IF COL_LENGTH('nt_chat_conversation_members', 'deleted_for_user') IS NULL
+                 ALTER TABLE nt_chat_conversation_members ADD deleted_for_user BIT NOT NULL DEFAULT 0`,
                 `IF NOT EXISTS (SELECT * FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME = 'nt_chat_message_reactions')
                  CREATE TABLE nt_chat_message_reactions (
                      id INT IDENTITY(1,1) PRIMARY KEY,
@@ -69,9 +73,31 @@ export class ChatDbService {
                  )`
             ];
             for (const sql of statements) {
-                await conn.request().query(sql);
+                try {
+                    await conn.request().query(sql);
+                } catch (e: any) {
+                    // Log but continue — column may already exist, or table may already exist
+                    console.warn('[ChatDb] ensureTables statement skipped:', e?.message || e);
+                }
             }
             console.log('[ChatDb] tables ensured');
+
+            // Dedicated migration: ensure deleted_for_user column exists
+            try {
+                const colCheck = await conn.request().query(
+                    `SELECT COL_LENGTH('nt_chat_conversation_members', 'deleted_for_user') AS col_exists`
+                );
+                if (!colCheck.recordset?.[0]?.col_exists) {
+                    await conn.request().query(
+                        `ALTER TABLE nt_chat_conversation_members ADD deleted_for_user BIT NOT NULL DEFAULT 0`
+                    );
+                    console.log('[ChatDb] Added deleted_for_user column');
+                }
+                HAS_DELETED_FOR_USER = true;
+            } catch (e: any) {
+                console.error('[ChatDb] Failed to ensure deleted_for_user column:', e?.message || e);
+                HAS_DELETED_FOR_USER = false;
+            }
         } catch (err) {
             console.error('[ChatDb] ensureTables error:', err);
         }
@@ -142,7 +168,15 @@ export class ChatDbService {
         );
 
         if (existing && existing.length > 0) {
-            return existing[0].id;
+            const convId = existing[0].id;
+            if (HAS_DELETED_FOR_USER) {
+                await executeNonQuery(
+                    `UPDATE nt_chat_conversation_members SET deleted_for_user = 0
+                     WHERE conversation_id = @convId AND user_id = @userA AND deleted_for_user = 1`,
+                    { convId, userA }
+                );
+            }
+            return convId;
         }
 
         const insertResult = await executeNonQuery(
@@ -191,6 +225,7 @@ export class ChatDbService {
     }
 
     static async getConversationsForUser(userId: number): Promise<any[]> {
+        const dfu = HAS_DELETED_FOR_USER;
         return executeQuery<any>(
             `SELECT
                  c.id as conversation_id,
@@ -206,7 +241,7 @@ export class ChatDbService {
                  (SELECT TOP 1 u.ID FROM nt_chat_conversation_members m
                   JOIN users u ON u.ID = m.user_id
                   WHERE m.conversation_id = c.id AND m.user_id <> @userId AND c.conversation_type = 'dm') as other_user_id,
-                 (SELECT COUNT(*) FROM nt_chat_conversation_members m WHERE m.conversation_id = c.id) as member_count,
+                 (SELECT COUNT(*) FROM nt_chat_conversation_members m WHERE m.conversation_id = c.id${dfu ? ' AND ISNULL(m.deleted_for_user, 0) = 0' : ''}) as member_count,
                  (SELECT TOP 1 content FROM nt_chat_messages msg WHERE msg.conversation_id = c.id ORDER BY msg.created_at DESC) as last_message,
                  (SELECT TOP 1 created_at FROM nt_chat_messages msg WHERE msg.conversation_id = c.id ORDER BY msg.created_at DESC) as last_message_time,
                  (SELECT TOP 1 sender_id FROM nt_chat_messages msg WHERE msg.conversation_id = c.id ORDER BY msg.created_at DESC) as last_sender_id,
@@ -214,7 +249,7 @@ export class ChatDbService {
                   WHERE msg.conversation_id = c.id AND msg.sender_id <> @userId
                     AND (me.last_read_at IS NULL OR msg.created_at > me.last_read_at)) as unread_count
              FROM nt_chat_conversations c
-             INNER JOIN nt_chat_conversation_members me ON me.conversation_id = c.id AND me.user_id = @userId
+             INNER JOIN nt_chat_conversation_members me ON me.conversation_id = c.id AND me.user_id = @userId${dfu ? ' AND ISNULL(me.deleted_for_user, 0) = 0' : ''}
              ORDER BY ISNULL((SELECT TOP 1 created_at FROM nt_chat_messages msg WHERE msg.conversation_id = c.id ORDER BY msg.created_at DESC), c.created_at) DESC`,
             { userId }
         );
@@ -288,9 +323,61 @@ export class ChatDbService {
     }
 
     static async deleteConversation(id: number): Promise<void> {
+        await executeNonQuery(`DELETE FROM nt_chat_message_reactions WHERE message_id IN (SELECT id FROM nt_chat_messages WHERE conversation_id = @id)`, { id });
         await executeNonQuery(`DELETE FROM nt_chat_messages WHERE conversation_id = @id`, { id });
         await executeNonQuery(`DELETE FROM nt_chat_conversation_members WHERE conversation_id = @id`, { id });
         await executeNonQuery(`DELETE FROM nt_chat_conversations WHERE id = @id`, { id });
+    }
+
+    static async hideConversationForUser(conversationId: number, userId: number): Promise<{ hidden: boolean; hardDeleted: boolean }> {
+        if (!HAS_DELETED_FOR_USER) return { hidden: false, hardDeleted: false };
+        await executeNonQuery(
+            `UPDATE nt_chat_conversation_members SET deleted_for_user = 1
+             WHERE conversation_id = @convId AND user_id = @userId`,
+            { convId: conversationId, userId }
+        );
+
+        const conversation = await this.getConversation(conversationId);
+        if (conversation?.conversation_type === 'dm') {
+            const remaining = await executeQuery<any>(
+                `SELECT COUNT(*) as cnt FROM nt_chat_conversation_members
+                 WHERE conversation_id = @convId AND deleted_for_user = 0`,
+                { convId: conversationId }
+            );
+            if (remaining[0]?.cnt === 0) {
+                await this.deleteConversation(conversationId);
+                return { hidden: true, hardDeleted: true };
+            }
+        }
+        return { hidden: true, hardDeleted: false };
+    }
+
+    static async unhideConversationForUser(conversationId: number, userId: number): Promise<void> {
+        if (!HAS_DELETED_FOR_USER) return;
+        await executeNonQuery(
+            `UPDATE nt_chat_conversation_members SET deleted_for_user = 0
+             WHERE conversation_id = @convId AND user_id = @userId`,
+            { convId: conversationId, userId }
+        );
+    }
+
+    static async isHiddenForUser(conversationId: number, userId: number): Promise<boolean> {
+        if (!HAS_DELETED_FOR_USER) return false;
+        const rows = await executeQuery<any>(
+            `SELECT 1 FROM nt_chat_conversation_members
+             WHERE conversation_id = @convId AND user_id = @userId AND deleted_for_user = 1`,
+            { convId: conversationId, userId }
+        );
+        return rows && rows.length > 0;
+    }
+
+    static async unhideForNewMessage(conversationId: number, senderId: number): Promise<void> {
+        if (!HAS_DELETED_FOR_USER) return;
+        await executeNonQuery(
+            `UPDATE nt_chat_conversation_members SET deleted_for_user = 0
+             WHERE conversation_id = @convId AND user_id <> @senderId AND deleted_for_user = 1`,
+            { convId: conversationId, senderId }
+        );
     }
 
     // ==================== MESSAGES ====================
@@ -404,11 +491,11 @@ export class ChatDbService {
         const params: any = { me: viewerId || 0 };
         messageIds.forEach((id, i) => params[`id${i}`] = id);
         const rows = await executeQuery<any>(
-            `SELECT message_id, emoji, COUNT(*) as count,
-                    SUM(CASE WHEN user_id = @me THEN 1 ELSE 0 END) as reacted
-             FROM nt_chat_message_reactions
-             WHERE message_id IN (${placeholders})
-             GROUP BY message_id, emoji`,
+            `SELECT r.message_id, r.emoji, COUNT(*) as count,
+                    SUM(CASE WHEN r.user_id = @me THEN 1 ELSE 0 END) as reacted
+             FROM nt_chat_message_reactions r
+             WHERE r.message_id IN (${placeholders})
+             GROUP BY r.message_id, r.emoji`,
             params
         );
         const map: Record<number, any[]> = {};
@@ -419,6 +506,22 @@ export class ChatDbService {
                 reacted: !!r.reacted
             });
         });
+
+        // Fetch individual user names for each reaction
+        for (const msgId of Object.keys(map).map(Number)) {
+            for (const reaction of map[msgId]) {
+                const userRows = await executeQuery<any>(
+                    `SELECT COALESCE(NULLIF(LTRIM(RTRIM(u.cuser_name)), ''),
+                         LTRIM(RTRIM(ISNULL(u.cfirst_name, '') + ' ' + ISNULL(u.clast_name, ''))),
+                         'User') as user_name
+                     FROM nt_chat_message_reactions r
+                     LEFT JOIN users u ON u.ID = r.user_id
+                     WHERE r.message_id = @m AND r.emoji = @e`,
+                    { m: msgId, e: reaction.emoji }
+                );
+                reaction.userNames = (userRows || []).map((u: any) => u.user_name).join(', ');
+            }
+        }
         return map;
     }
 
@@ -487,5 +590,110 @@ export class ChatDbService {
             `UPDATE nt_chat_conversation_members SET last_read_at = GETUTCDATE() WHERE conversation_id = @convId AND user_id = @userId`,
             { convId: conversationId, userId }
         );
+    }
+
+    // ==================== SEARCH ====================
+
+    static async searchChats(userId: number, query: string, limit = 50): Promise<any[]> {
+        const q = query ? query.trim() : '';
+        if (!q) return [];
+        const dfu = HAS_DELETED_FOR_USER;
+        const dfuFilter = dfu ? ' AND ISNULL(me.deleted_for_user, 0) = 0' : '';
+
+        // Search conversations by group name
+        const convByName = await executeQuery<any>(
+            `SELECT DISTINCT c.id as conversation_id, c.name as group_name, c.avatar_url as group_avatar,
+                    c.conversation_type, c.created_at,
+                    'conversation_name' as match_type,
+                    c.name as match_snippet
+             FROM nt_chat_conversations c
+             INNER JOIN nt_chat_conversation_members me ON me.conversation_id = c.id AND me.user_id = @userId${dfuFilter}
+             WHERE c.conversation_type = 'group' AND c.name LIKE @term`,
+            { userId, term: `%${q}%` }
+        );
+
+        // Search DM conversations by other user's name
+        const dmByName = await executeQuery<any>(
+            `SELECT DISTINCT c.id as conversation_id,
+                    COALESCE(NULLIF(LTRIM(RTRIM(u.cuser_name)), ''), CONCAT(u.cfirst_name, ' ', u.clast_name), u.cfirst_name) as group_name,
+                    u.cprofile_image_name as group_avatar,
+                    c.conversation_type, c.created_at,
+                    'user_name' as match_type,
+                    COALESCE(NULLIF(LTRIM(RTRIM(u.cuser_name)), ''), CONCAT(u.cfirst_name, ' ', u.clast_name), u.cfirst_name) as match_snippet
+             FROM nt_chat_conversations c
+             INNER JOIN nt_chat_conversation_members me ON me.conversation_id = c.id AND me.user_id = @userId${dfuFilter}
+             INNER JOIN nt_chat_conversation_members om ON om.conversation_id = c.id AND om.user_id <> @userId
+             INNER JOIN users u ON u.ID = om.user_id
+             WHERE c.conversation_type = 'dm'
+               AND (u.cuser_name LIKE @term OR u.cfirst_name LIKE @term OR u.clast_name LIKE @term OR u.cemail LIKE @term)`,
+            { userId, term: `%${q}%` }
+        );
+
+        // Search message content
+        const msgMatches = await executeQuery<any>(
+            `SELECT TOP (@limit) msg.conversation_id,
+                    msg.id as message_id, msg.content as match_snippet, msg.sender_id, msg.created_at as message_time,
+                    COALESCE(NULLIF(LTRIM(RTRIM(su.cuser_name)), ''), CONCAT(su.cfirst_name, ' ', su.clast_name), su.cfirst_name) as sender_name
+             FROM nt_chat_messages msg
+             INNER JOIN nt_chat_conversation_members me ON me.conversation_id = msg.conversation_id AND me.user_id = @userId${dfuFilter.replace('me.', 'me.')}
+             INNER JOIN users su ON su.ID = msg.sender_id
+             WHERE msg.content LIKE @term
+             ORDER BY msg.created_at DESC`,
+            { userId, term: `%${q}%`, limit }
+        );
+
+        // Combine results into a map by conversation_id
+        const convMap = new Map<number, any>();
+
+        // Add conversation name matches
+        for (const row of [...convByName, ...dmByName]) {
+            if (!convMap.has(row.conversation_id)) {
+                convMap.set(row.conversation_id, {
+                    conversation_id: row.conversation_id,
+                    group_name: row.group_name,
+                    group_avatar: row.group_avatar,
+                    conversation_type: row.conversation_type,
+                    created_at: row.created_at,
+                    match_type: row.match_type,
+                    match_snippet: row.match_snippet,
+                    matching_messages: []
+                });
+            }
+        }
+
+        // Add message matches with snippets
+        for (const row of msgMatches) {
+            if (!convMap.has(row.conversation_id)) {
+                // Need to fetch conversation info for message matches
+                const conv = await this.getConversation(row.conversation_id);
+                const convMembers = await this.getMembers(row.conversation_id);
+                let displayName = conv?.name || '';
+                let avatar = conv?.avatar_url || '';
+                if (conv?.conversation_type === 'dm') {
+                    const other = convMembers.find((m: any) => toInt(m.user_id) !== userId);
+                    displayName = other?.full_name || 'User';
+                    avatar = other?.avatar_url || '';
+                }
+                convMap.set(row.conversation_id, {
+                    conversation_id: row.conversation_id,
+                    group_name: displayName,
+                    group_avatar: avatar,
+                    conversation_type: conv?.conversation_type || 'dm',
+                    created_at: conv?.created_at,
+                    match_type: 'message_content',
+                    match_snippet: row.match_snippet,
+                    matching_messages: []
+                });
+            }
+            const conv = convMap.get(row.conversation_id)!;
+            conv.matching_messages.push({
+                message_id: row.message_id,
+                content: row.match_snippet,
+                sender_name: row.sender_name,
+                message_time: row.message_time
+            });
+        }
+
+        return Array.from(convMap.values()).slice(0, limit);
     }
 }
