@@ -169,8 +169,15 @@ export class MeetingController {
 
             const rawUserId = req.user?.id || req.user?.cuserid;
             const userId = await resolveUserId(rawUserId);
-            const displayName = req.user?.fullName || req.user?.username || req.body.display_name || 'Guest';
+            let displayName = req.user?.fullName || req.user?.username || req.body.display_name || 'Guest';
             const email = req.user?.email || req.body.email || null;
+
+            if (userId && (displayName === 'Guest' || /^\d+$/.test(displayName))) {
+                try {
+                    const resolvedName = await MeetingDbService.resolveUserName(userId);
+                    if (resolvedName && resolvedName !== 'Guest') displayName = resolvedName;
+                } catch (e) {}
+            }
 
             const participantStatus = meeting.waiting_room ? 'waiting' : 'joined';
             const isHost = toInt(meeting.host_user_id) === userId;
@@ -190,7 +197,8 @@ export class MeetingController {
                     success: true,
                     status: 'joined',
                     meeting,
-                    participant
+                    participant,
+                    resolvedName: displayName
                 });
             }
 

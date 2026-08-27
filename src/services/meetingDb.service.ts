@@ -529,6 +529,34 @@ export class MeetingDbService {
         );
     }
 
+    static async resolveUserName(userId: any): Promise<string> {
+        if (!userId) return 'Guest';
+        const numVal = parseInt(String(userId), 10);
+        const searchVal = isNaN(numVal) ? userId : numVal;
+        try {
+            const rows = await executeQuery<any>(
+                `SELECT TOP 1 cuser_name FROM users WHERE id = @val OR cuserid = @val`,
+                { val: searchVal }
+            );
+            if (rows.length > 0 && rows[0].cuser_name) {
+                console.log(`[MeetingDB] Resolved name: "${rows[0].cuser_name}" for userId=${userId} (searched as ${searchVal})`);
+                return rows[0].cuser_name;
+            }
+            const strRows = await executeQuery<any>(
+                `SELECT TOP 1 cuser_name FROM users WHERE CAST(id AS VARCHAR) = @sval OR CAST(cuserid AS VARCHAR) = @sval`,
+                { sval: String(userId) }
+            );
+            if (strRows.length > 0 && strRows[0].cuser_name) {
+                console.log(`[MeetingDB] Resolved name (string): "${strRows[0].cuser_name}" for userId=${userId}`);
+                return strRows[0].cuser_name;
+            }
+        } catch (e) {
+            console.error('[MeetingDB] Error resolving user name:', e);
+        }
+        console.warn(`[MeetingDB] Could not resolve name for userId=${userId}, returning Guest`);
+        return 'Guest';
+    }
+
     static async searchUsers(query: string): Promise<any[]> {
         return await executeQuery<any>(
             `SELECT TOP 20 id, cuserid, cuser_name, cemail, cprofile_image_name FROM users

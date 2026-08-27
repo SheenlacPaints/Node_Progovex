@@ -65,10 +65,26 @@ export function registerMeetingSocketHandlers(io: Server): void {
             }
 
             const room = meetingRooms.get(meetingCode)!;
+            const rawUserId = user?.id || user?.cuserid || null;
+            const rawName = user?.name || user?.fullName || user?.username || 'Guest';
+
+            let resolvedName = rawName;
+            console.log(`[MeetingSocket] Resolving name for userId=${rawUserId}, rawName=${rawName}`);
+            if (rawUserId) {
+                try {
+                    const dbName = await MeetingDbService.resolveUserName(rawUserId);
+                    console.log(`[MeetingSocket] resolveUserName(${rawUserId}) returned: "${dbName}"`);
+                    if (dbName && dbName !== 'Guest') resolvedName = dbName;
+                } catch (e) {
+                    console.error('[MeetingSocket] Name resolve error:', e);
+                }
+            }
+            console.log(`[MeetingSocket] Final resolved name: "${resolvedName}" for userId=${rawUserId}`);
+
             currentUser = {
                 socketId: socket.id,
-                userId: user?.id || user?.cuserid || null,
-                name: user?.name || user?.fullName || user?.username || 'Guest',
+                userId: rawUserId,
+                name: resolvedName,
                 meetingCode,
                 joinedAt: Date.now()
             };
@@ -86,6 +102,12 @@ export function registerMeetingSocketHandlers(io: Server): void {
             socket.to(`meeting_${meetingCode}`).emit('meeting:user-joined', {
                 socketId: socket.id,
                 user: { name: currentUser.name, id: currentUser.userId }
+            });
+
+            socket.emit('meeting:self-joined', {
+                socketId: socket.id,
+                resolvedName: currentUser.name,
+                userId: currentUser.userId
             });
 
             broadcastParticipantCount(io, meetingCode);
