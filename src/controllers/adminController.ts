@@ -467,7 +467,7 @@ export const rejectPost = async (req: AuthRequest, res: Response) => {
         let notifyObj = {
             userUrl: rejectPostUrl,
             title: "Sheenlac Connect Notification",
-            body: `Your post was not approved for publication. Reason: ${rejectionRemark || 'No reason provided'}. Please review the feedback and make the necessary changes before resubmitting.`
+            body: `Your post was Approval Rejected for publication. Reason: ${rejectionRemark || 'No reason provided'}. Please review the feedback and make the necessary changes before resubmitting.`
         }
         const token = await new FirebaseTokenService().sendSelectedUserNotify(notifyObj);
         console.log('🔔 Notification sent:', token);
