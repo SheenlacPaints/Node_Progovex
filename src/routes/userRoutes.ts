@@ -11,6 +11,7 @@ import {
     getFollowing,
     searchUsers,
     getNotifications,
+    getUserNotifications,
     markNotificationRead,
     deleteNotification,
     getUserStats,
@@ -18,7 +19,8 @@ import {
     changePassword,
     deactivateAccount,
     markAllNotificationsRead,
-    markAllAsRead
+    markAllAsRead,
+    updateUserNotifications
 } from '../controllers/userController';
 import { authenticateToken } from '../middleware/auth';
 import { upload } from '../utils/fileUpload';
@@ -49,9 +51,11 @@ router.get('/search', searchUsers);
 
 // Notifications routes
 router.get('/notifications', authenticateToken, getNotifications);
+router.get('/notifications/user', authenticateToken, getUserNotifications);
 router.put('/notifications/:id/read', authenticateToken, markNotificationRead);
 router.put('/notifications/read-all', authenticateToken, markAllAsRead);
 router.delete('/notifications/:id', authenticateToken, deleteNotification);
+router.put('/notifications/update', authenticateToken, updateUserNotifications);
 
 // Stats and Activity
 router.get('/stats', getUserStats);

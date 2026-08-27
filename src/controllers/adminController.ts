@@ -282,6 +282,11 @@ export const approvePost = async (req: AuthRequest, res: Response) => {
         }
       );
 
+        // Update the nt_flage field in the users table to 1 for all users
+        const result = await executeNonQuery(
+          `UPDATE users SET nt_flage = 1`,
+        );
+
         // send push notification for the post all users
         const tokens = [
             "eJKLNz3XQNyXc0lDxEQ4si:APA91bEGW9amRuw56MdElJNt-HaDJ2TpKCp1oF7uD020gsheDzDz4IQjcM83SVMiXm7VzSSSxPflJsOKD8CpP3imHNOcMNhdhCekSFXrFS3I9oC3lqaMsmg",
