@@ -6,6 +6,7 @@ const router = Router();
 
 // User search (for invitations) - MUST be before /:code
 router.get('/users/search', MeetingController.searchUsers);
+router.get('/ice-config', MeetingController.getIceConfig);
 
 // Meeting CRUD
 router.post('/', authenticateToken, MeetingController.createMeeting);

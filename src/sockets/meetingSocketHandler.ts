@@ -98,11 +98,13 @@ export function registerMeetingSocketHandlers(io: Server): void {
                 socketId: u.socketId,
                 user: { name: u.name, id: u.userId }
             })));
+            console.log(`[MeetingSocket] Sent existing-users to ${socket.id}: ${existingUsers.map(u => u.socketId).join(', ') || '(none)'}`);
 
             socket.to(`meeting_${meetingCode}`).emit('meeting:user-joined', {
                 socketId: socket.id,
                 user: { name: currentUser.name, id: currentUser.userId }
             });
+            console.log(`[MeetingSocket] Broadcast user-joined to room ${meetingCode}: ${room.size} participants total (${[...room.keys()].join(', ')})`);
 
             socket.emit('meeting:self-joined', {
                 socketId: socket.id,
@@ -119,6 +121,8 @@ export function registerMeetingSocketHandlers(io: Server): void {
         socket.on('meeting:offer', (data: { meetingCode: string; to: string; offer: any }) => {
             const room = meetingRooms.get(data.meetingCode);
             const sender = room?.get(socket.id);
+            const hasTarget = !!(io.sockets.sockets.get(data.to));
+            console.log(`[Signaling] offer ${socket.id} -> ${data.to} (room=${data.meetingCode}, targetConnected=${hasTarget})`);
             io.to(data.to).emit('meeting:offer', {
                 from: socket.id,
                 offer: data.offer,
@@ -128,6 +132,7 @@ export function registerMeetingSocketHandlers(io: Server): void {
 
         // WEBRTC SIGNALING - ANSWER
         socket.on('meeting:answer', (data: { meetingCode: string; to: string; answer: any }) => {
+            console.log(`[Signaling] answer ${socket.id} -> ${data.to}`);
             io.to(data.to).emit('meeting:answer', {
                 from: socket.id,
                 answer: data.answer
@@ -136,6 +141,7 @@ export function registerMeetingSocketHandlers(io: Server): void {
 
         // WEBRTC SIGNALING - ICE CANDIDATE
         socket.on('meeting:ice-candidate', (data: { meetingCode: string; to: string; candidate: any }) => {
+            console.log(`[Signaling] ice-candidate ${socket.id} -> ${data.to} (${data.candidate?.candidate || 'raw'})`);
             io.to(data.to).emit('meeting:ice-candidate', {
                 from: socket.id,
                 candidate: data.candidate
