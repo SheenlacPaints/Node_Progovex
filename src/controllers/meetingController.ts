@@ -793,4 +793,56 @@ export class MeetingController {
     }): Promise<any> {
         return await MeetingDbService.saveMessage(data);
     }
+
+    /**
+     * Serves the WebRTC ICE server configuration (STUN + TURN) to the frontend.
+     * TURN credentials are loaded from .env so a self-hosted coturn can be used
+     * without hardcoding secrets in the client bundle, and can be rotated.
+     */
+    static async getIceConfig(_req: Request, res: Response): Promise<void> {
+        try {
+            const iceServers: any[] = [
+                { urls: ['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302', 'stun:stun2.l.google.com:19302'] },
+                { urls: ['stun:stun3.l.google.com:19302', 'stun:stun4.l.google.com:19302'] }
+            ];
+
+            const turnUser = process.env.TURN_USER;
+            const turnPass = process.env.TURN_PASSWORD;
+            const turnHost = process.env.TURN_HOST;
+
+            if (turnHost) {
+                // Build both UDP and TCP/443 relay URLs. Many mobile carriers block UDP,
+                // so a TURN-over-TCP (and optionally TLS) fallback on 443 is required.
+                const urls: string[] = [
+                    `turn:${turnHost}:3478`,
+                    `turn:${turnHost}:3478?transport=tcp`
+                ];
+                if (process.env.TURN_TLS_PORT) {
+                    urls.push(`turns:${turnHost}:${process.env.TURN_TLS_PORT}`);
+                }
+                iceServers.push({
+                    urls,
+                    username: turnUser || undefined,
+                    credential: turnPass || undefined
+                });
+                console.log(`[Meeting] Serving TURN config for ${turnHost} (${urls.length} relay URLs)`);
+            } else {
+                // Fallback to public free relay if no self-hosted coturn is configured.
+                iceServers.push({
+                    urls: [
+                        'turn:openrelay.metered.ca:80',
+                        'turn:openrelay.metered.ca:80?transport=tcp',
+                        'turn:openrelay.metered.ca:443',
+                        'turn:openrelay.metered.ca:443?transport=tcp'
+                    ],
+                    username: 'openrelayproject',
+                    credential: 'openrelayproject'
+                });
+            }
+
+            res.json({ success: true, iceServers });
+        } catch (error: any) {
+            res.status(500).json({ success: false, message: error.message });
+        }
+    }
 }
