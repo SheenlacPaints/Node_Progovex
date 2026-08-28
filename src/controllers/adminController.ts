@@ -299,8 +299,8 @@ export const approvePost = async (req: AuthRequest, res: Response) => {
             title: "Sheenlac Connect Notification",
             body: `${post.username || 'Someone'} has shared a new post on Sheenlac Connect. The post is now available for everyone to view.`
         }
-        // const token = await new FirebaseTokenService().sendAllNotification(notifyObj);
-        // console.log('🔔 Notification sent:', token);
+        const token = await new FirebaseTokenService().sendAllNotification(notifyObj);
+        console.log('🔔 Notification sent:', token);
     }
 
     // Get the approved post with all details including user info and parsed data
