@@ -282,6 +282,11 @@ export const approvePost = async (req: AuthRequest, res: Response) => {
         }
       );
 
+        // Update the nt_flage field in the users table to 1 for all users
+        const result = await executeNonQuery(
+          `UPDATE users SET nt_flage = 1`,
+        );
+
         // send push notification for the post all users
         const tokens = [
             "eJKLNz3XQNyXc0lDxEQ4si:APA91bEGW9amRuw56MdElJNt-HaDJ2TpKCp1oF7uD020gsheDzDz4IQjcM83SVMiXm7VzSSSxPflJsOKD8CpP3imHNOcMNhdhCekSFXrFS3I9oC3lqaMsmg",
@@ -294,8 +299,8 @@ export const approvePost = async (req: AuthRequest, res: Response) => {
             title: "Sheenlac Connect Notification",
             body: `${post.username || 'Someone'} has shared a new post on Sheenlac Connect. The post is now available for everyone to view.`
         }
-        const token = await new FirebaseTokenService().sendAllNotification(notifyObj);
-        console.log('🔔 Notification sent:', token);
+        // const token = await new FirebaseTokenService().sendAllNotification(notifyObj);
+        // console.log('🔔 Notification sent:', token);
     }
 
     // Get the approved post with all details including user info and parsed data
@@ -462,7 +467,7 @@ export const rejectPost = async (req: AuthRequest, res: Response) => {
         let notifyObj = {
             userUrl: rejectPostUrl,
             title: "Sheenlac Connect Notification",
-            body: `Your post was not approved for publication. Reason: ${rejectionRemark || 'No reason provided'}. Please review the feedback and make the necessary changes before resubmitting.`
+            body: `Your post was Approval Rejected for publication. Reason: ${rejectionRemark || 'No reason provided'}. Please review the feedback and make the necessary changes before resubmitting.`
         }
         const token = await new FirebaseTokenService().sendSelectedUserNotify(notifyObj);
         console.log('🔔 Notification sent:', token);

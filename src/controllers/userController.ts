@@ -695,3 +695,42 @@ export const getNotificationSettings = async (req: AuthRequest, res: Response) =
         res.status(500).json({ success: false, message: 'Failed to get notification settings' });
     }
 };
+
+export const getUserNotifications = async (req: AuthRequest, res: Response) => {
+    try {
+        const userId = req.user!.id;
+
+        const userNotified = await executeQuery<any>(
+            `SELECT nt_flage from Users WHERE cuserid = @userId and nt_flage = 1`,
+            { userId }
+        );
+
+        res.json({
+            success: true,
+            userNotified: userNotified
+        });
+    } catch (error) {
+        console.error('Error getting notification :', error);
+        res.status(500).json({ success: false, message: 'Failed to get notification status' });
+    }
+};
+
+export const updateUserNotifications = async (req: AuthRequest, res: Response) => {
+    try {
+        const userId = req.user!.id;
+
+        // Update the nt_flage field in the users table to 1 for all users
+        const result = await executeNonQuery(
+          `UPDATE users SET nt_flage = 0 WHERE cuserid = @userId`,
+          { userId }
+        );
+
+        res.json({
+            success: true,
+            userNotified: result
+        });
+    } catch (error) {
+        console.error('Error getting notification :', error);
+        res.status(500).json({ success: false, message: 'Failed to get notification status' });
+    }
+};
