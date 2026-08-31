@@ -145,7 +145,7 @@ export const createPost = async (req: AuthRequest, res: Response) => {
             pollData: pollData ? JSON.stringify(pollData).substring(0, 100) : null,
             hashtags
         });
-
+ 
         let imageUrls: string[] = [];
         let videoUrls: string[] = [];
         let mediaUrls: string[] = [];
