@@ -89,6 +89,7 @@ export function registerChatSocketHandlers(io: Server): void {
             content: string;
             message_type?: string;
             attachment_url?: string;
+            attachment_name?: string;
             reply_to_message_id?: number;
         }) => {
             const uId = await getUserIdFromSocket(socket);
@@ -108,8 +109,14 @@ export function registerChatSocketHandlers(io: Server): void {
                     message_type: data.message_type || 'text',
                     content: content || null,
                     attachment_url: data.attachment_url || null,
+                    attachment_name: data.attachment_name || null,
                     reply_to_message_id: replyToId || null
                 });
+
+                // Re-surface the conversation for any member who had soft-deleted
+                // (hidden) it, so new incoming messages re-open the thread instead
+                // of silently disappearing.
+                await ChatDbService.unhideForNewMessage(convId, uId).catch(() => { });
 
                 const senders = await ChatDbService.getUsersByIds([uId]);
                 const sender = senders && senders.length > 0 ? senders[0] : null;
@@ -124,7 +131,8 @@ export function registerChatSocketHandlers(io: Server): void {
                             sender_name: (r.sender_name || '').trim() || null,
                             message_type: r.message_type,
                             content: r.content,
-                            attachment_url: r.attachment_url
+                            attachment_url: r.attachment_url,
+                            attachment_name: r.attachment_name
                         };
                     }
                 }
@@ -138,6 +146,7 @@ export function registerChatSocketHandlers(io: Server): void {
                     message_type: data.message_type || 'text',
                     content: content || null,
                     attachment_url: data.attachment_url || null,
+                    attachment_name: data.attachment_name || null,
                     reply_to,
                     reactions: [],
                     is_read: false,

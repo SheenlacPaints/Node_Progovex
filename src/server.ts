@@ -55,7 +55,8 @@ const allowedOrigins = [
     'http://localhost:4200',
     'http://localhost:3000',
     'http://127.0.0.1:4200',
-    'https://localhost:4200'
+    'https://localhost:4200',
+    'http://192.168.6.88:4200'
 ];
 
 const corsOptions = {
@@ -266,8 +267,31 @@ app.use(errorHandler);
 
 connectMongoDB().catch(console.error);
 gmailTokenDbService.ensureTable().catch(console.error);
-MeetingDbService.ensureTables().catch(console.error);
-ChatDbService.ensureTables().catch(console.error);
+
+// Ensure DB tables/columns exist, retrying in the background if the SQL Server
+// is temporarily unreachable at startup so migrations still apply once it's back.
+function ensureTablesWithRetry(fn: () => Promise<void>, name: string): void {
+    const ATTEMPTS = 10;
+    const DELAY_MS = 15000;
+    let attempt = 0;
+    const tryRun = async (): Promise<void> => {
+        attempt++;
+        try {
+            await fn();
+            console.log(`[${name}] tables/columns ensured`);
+        } catch (e: any) {
+            console.error(`[${name}] ensureTables attempt ${attempt} failed:`, e?.message || e);
+            if (attempt < ATTEMPTS) {
+                setTimeout(tryRun, DELAY_MS);
+            } else {
+                console.error(`[${name}] gave up after ${ATTEMPTS} attempts`);
+            }
+        }
+    };
+    tryRun();
+}
+ensureTablesWithRetry(() => MeetingDbService.ensureTables(), 'MeetingDb');
+ensureTablesWithRetry(() => ChatDbService.ensureTables(), 'ChatDb');
 registerMeetingSocketHandlers(io);
 registerChatSocketHandlers(io);
 

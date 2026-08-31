@@ -51,6 +51,8 @@ export class ChatDbService {
                  CREATE INDEX IX_chat_messages_conv ON nt_chat_messages (conversation_id)`,
                 `IF COL_LENGTH('nt_chat_messages', 'reply_to_message_id') IS NULL
                  ALTER TABLE nt_chat_messages ADD reply_to_message_id INT NULL`,
+                `IF COL_LENGTH('nt_chat_messages', 'attachment_name') IS NULL
+                 ALTER TABLE nt_chat_messages ADD attachment_name NVARCHAR(1000) NULL`,
                 `IF COL_LENGTH('nt_chat_conversation_members', 'deleted_for_user') IS NULL
                  ALTER TABLE nt_chat_conversation_members ADD deleted_for_user BIT NOT NULL DEFAULT 0`,
                 `IF NOT EXISTS (SELECT * FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME = 'nt_chat_message_reactions')
@@ -385,11 +387,11 @@ export class ChatDbService {
     static async getMessages(conversationId: number, limit = 200, viewerId?: number): Promise<any[]> {
         const rows = await executeQuery<any>(
             `SELECT TOP (@limit) msg.id, msg.conversation_id, msg.sender_id, msg.message_type, msg.content,
-                    msg.attachment_url, msg.reply_to_message_id, msg.created_at,
+                    msg.attachment_url, msg.attachment_name, msg.reply_to_message_id, msg.created_at,
                     COALESCE(NULLIF(LTRIM(RTRIM(u.cuser_name)), ''), CONCAT(u.cfirst_name, ' ', u.clast_name), u.cfirst_name) as sender_name,
                     u.cprofile_image_name as sender_avatar,
                     r.id as reply_id, r.sender_id as reply_sender_id, r.message_type as reply_message_type,
-                    r.content as reply_content, r.attachment_url as reply_attachment_url,
+                    r.content as reply_content, r.attachment_url as reply_attachment_url, r.attachment_name as reply_attachment_name,
                     COALESCE(NULLIF(LTRIM(RTRIM(ru.cuser_name)), ''), CONCAT(ru.cfirst_name, ' ', ru.clast_name), ru.cfirst_name) as reply_sender_name
              FROM nt_chat_messages msg
              JOIN users u ON u.ID = msg.sender_id
@@ -436,7 +438,8 @@ export class ChatDbService {
                     sender_name: (r.reply_sender_name || '').trim() || null,
                     message_type: r.reply_message_type,
                     content: r.reply_content,
-                    attachment_url: r.reply_attachment_url
+                    attachment_url: r.reply_attachment_url,
+                    attachment_name: r.reply_attachment_name
                 } : null,
                 reactions: reactions[r.id] || []
             };
@@ -445,7 +448,7 @@ export class ChatDbService {
 
     static async getMessageById(id: number): Promise<any | null> {
         const rows = await executeQuery<any>(
-            `SELECT msg.id, msg.conversation_id, msg.sender_id, msg.message_type, msg.content, msg.attachment_url,
+            `SELECT msg.id, msg.conversation_id, msg.sender_id, msg.message_type, msg.content, msg.attachment_url, msg.attachment_name,
                     msg.reply_to_message_id, msg.created_at,
                     COALESCE(NULLIF(LTRIM(RTRIM(u.cuser_name)), ''), CONCAT(u.cfirst_name, ' ', u.clast_name), u.cfirst_name) as sender_name,
                     u.cprofile_image_name as sender_avatar
@@ -457,24 +460,37 @@ export class ChatDbService {
         return rows && rows.length > 0 ? rows[0] : null;
     }
 
+    static async getAttachmentNameForUrl(attachmentUrl: string): Promise<string | null> {
+        if (!attachmentUrl) return null;
+        const rows = await executeQuery<any>(
+            `SELECT TOP 1 attachment_name
+             FROM nt_chat_messages
+             WHERE attachment_url = @url AND attachment_name IS NOT NULL AND LTRIM(RTRIM(attachment_name)) <> ''`,
+            { url: attachmentUrl }
+        );
+        return rows && rows.length > 0 ? rows[0].attachment_name : null;
+    }
+
     static async saveMessage(data: {
         conversation_id: number;
         sender_id: number;
         message_type?: string;
         content?: string;
         attachment_url?: string;
+        attachment_name?: string;
         reply_to_message_id?: number | null;
     }): Promise<any> {
         const insertResult = await executeNonQuery(
-            `INSERT INTO nt_chat_messages (conversation_id, sender_id, message_type, content, attachment_url, reply_to_message_id)
+            `INSERT INTO nt_chat_messages (conversation_id, sender_id, message_type, content, attachment_url, attachment_name, reply_to_message_id)
              OUTPUT INSERTED.id, INSERTED.created_at
-             VALUES (@convId, @senderId, @type, @content, @attachmentUrl, @replyTo)`,
+             VALUES (@convId, @senderId, @type, @content, @attachmentUrl, @attachmentName, @replyTo)`,
             {
                 convId: data.conversation_id,
                 senderId: data.sender_id,
                 type: data.message_type || 'text',
                 content: data.content || null,
                 attachmentUrl: data.attachment_url || null,
+                attachmentName: data.attachment_name || null,
                 replyTo: data.reply_to_message_id || null
             }
         );

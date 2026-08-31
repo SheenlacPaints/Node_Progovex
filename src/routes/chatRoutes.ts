@@ -9,6 +9,11 @@ import { resolveUserId } from '../services/chatIdentity.service';
 
 const router = Router();
 
+// Public download: serves a chat attachment with its original name.
+// Register before authenticateToken because uploads are served statically
+// (public) already, and a plain <a href> download can't carry the Bearer header.
+router.get('/download', ChatController.downloadAttachment);
+
 router.use(authenticateToken);
 
 // Normalize the authenticated identity to the canonical users.ID

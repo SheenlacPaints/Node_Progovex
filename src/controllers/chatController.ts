@@ -1,5 +1,7 @@
 import { Request, Response } from 'express';
 import { Server } from 'socket.io';
+import path from 'path';
+import fs from 'fs';
 import { AuthRequest } from '../middleware/auth';
 import { ChatDbService } from '../services/chatDb.service';
 
@@ -26,6 +28,30 @@ async function broadcastToUserRooms(io: Server, convId: number, event: string, p
 }
 
 export class ChatController {
+
+    // GET /node/api/chats/download?url=/uploads/chat/chat_<ts>_<rand>.<ext>
+    // Serves a chat attachment with the ORIGINAL uploaded file name in
+    // Content-Disposition so downloads keep a human-friendly name.
+    static async downloadAttachment(req: Request, res: Response): Promise<void> {
+        try {
+            const url = req.query.url ? String(req.query.url) : '';
+            if (!url) return void res.status(400).json({ error: 'url required' });
+            const storedName = path.basename(url);
+            if (!storedName || storedName === '.' || storedName === '..') {
+                return void res.status(400).json({ error: 'Invalid file' });
+            }
+            const filePath = path.join(__dirname, '../../uploads/chat', storedName);
+            if (!fs.existsSync(filePath)) {
+                return void res.status(404).json({ error: 'File not found' });
+            }
+            const originalName = await ChatDbService.getAttachmentNameForUrl(url);
+            const downloadName = (originalName || storedName).trim() || storedName;
+            res.download(filePath, downloadName);
+        } catch (error) {
+            console.error('[Chat] downloadAttachment error:', error);
+            res.status(500).json({ error: 'Failed to download file' });
+        }
+    }
 
     // GET /node/api/chats
     static async listChats(req: AuthRequest, res: Response): Promise<void> {
@@ -211,8 +237,14 @@ export class ChatController {
                 message_type: req.body.message_type || 'text',
                 content: content || null,
                 attachment_url: req.body.attachment_url || null,
+                attachment_name: req.body.attachment_name || null,
                 reply_to_message_id: replyToId || null
             });
+
+            // Re-surface the conversation for any member who had soft-deleted
+            // (hidden) it, so new incoming messages re-open the thread instead of
+            // silently disappearing.
+            await ChatDbService.unhideForNewMessage(convId, userId).catch(() => { });
 
             const senders = await ChatDbService.getUsersByIds([userId]);
             const sender = senders && senders.length > 0 ? senders[0] : null;
@@ -226,7 +258,8 @@ export class ChatController {
                         sender_name: (r.sender_name || '').trim() || null,
                         message_type: r.message_type,
                         content: r.content,
-                        attachment_url: r.attachment_url
+                        attachment_url: r.attachment_url,
+                        attachment_name: r.attachment_name
                     };
                 }
             }
@@ -239,6 +272,7 @@ export class ChatController {
                 message_type: req.body.message_type || 'text',
                 content: content || null,
                 attachment_url: req.body.attachment_url || null,
+                attachment_name: req.body.attachment_name || null,
                 reply_to,
                 reactions: [],
                 is_read: false,
@@ -310,7 +344,8 @@ export class ChatController {
                 sender_id: userId,
                 message_type: original.message_type || 'text',
                 content: original.content || null,
-                attachment_url: original.attachment_url || null
+                attachment_url: original.attachment_url || null,
+                attachment_name: original.attachment_name || null
             });
             const senders = await ChatDbService.getUsersByIds([userId]);
             const sender = senders && senders.length > 0 ? senders[0] : null;
@@ -323,6 +358,7 @@ export class ChatController {
                 message_type: original.message_type || 'text',
                 content: original.content || null,
                 attachment_url: original.attachment_url || null,
+                attachment_name: original.attachment_name || null,
                 forwarded_from: {
                     sender_name: (original.sender_name || '').trim() || null
                 },
