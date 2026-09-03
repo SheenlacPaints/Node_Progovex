@@ -43,7 +43,7 @@ const upload = multer({
     }),
     limits: { fileSize: 50 * 1024 * 1024 },
     fileFilter: (req, file, cb) => {
-        const ok = /\.(png|jpe?g|gif|webp|svg|pdf|docx?|xlsx?|pptx?|txt|csv|zip|mp4|webm|mov|mp3|wav|ogg)$/i.test(file.originalname);
+        const ok = /\.(png|jpe?g|gif|webp|svg|pdf|docx?|xlsx?|pptx?|ppt|txt|csv|zip|rar|mp4|webm|mov|avi|mp3|wav|ogg)$/i.test(file.originalname);
         if (!ok) return cb(new Error('File type not allowed'));
         cb(null, true);
     }
@@ -56,8 +56,7 @@ function toInt(val: any): number | undefined {
 }
 
 // Upload a chat attachment -> returns relative url stored in messages
-router.post('/upload', upload.single('file'), async (req: AuthRequest, res: Response): Promise<void> => {
-    try {
+router.post('/upload', upload.single('file'), async (req: AuthRequest, res: Response): Promise<void> => {    try {
         const file = req.file;
         if (!file) { res.status(400).json({ error: 'No file uploaded' }); return; }
         const url = `/uploads/chat/${file.filename}`;
@@ -86,6 +85,7 @@ router.post('/:id/icon', upload.single('file'), async (req: AuthRequest, res: Re
 
         const url = `/uploads/chat/${file.filename}`;
         await ChatDbService.updateConversation(convId, { avatar_url: url });
+        await ChatDbService.addGroupHistory(convId, userId, 'avatar_changed', `changed the group photo`).catch(() => { });
         res.json({ success: true, url });
     } catch (error: any) {
         console.error('[Chat] icon upload error:', error);
@@ -93,8 +93,12 @@ router.post('/:id/icon', upload.single('file'), async (req: AuthRequest, res: Re
     }
 });
 
+// Delete a group avatar
+router.delete('/:id/icon', ChatController.deleteGroupIcon);
+
 router.get('/', ChatController.listChats);
 router.get('/search', ChatController.searchChats);
+router.get('/gifs', ChatController.searchGifs);
 router.get('/users', ChatController.searchUsers);
 router.post('/dm', ChatController.createDM);
 router.post('/group', ChatController.createGroup);
@@ -102,8 +106,15 @@ router.post('/group', ChatController.createGroup);
 router.get('/:id', ChatController.getConversation);
 router.get('/:id/messages', ChatController.getMessages);
 router.post('/:id/messages', ChatController.sendMessage);
+router.get('/:id/search', ChatController.searchMessages);
+router.get('/:id/history', ChatController.getGroupHistory);
+router.post('/:id/pin', ChatController.pinMessage);
+router.get('/:id/pin', ChatController.getPinnedMessage);
+router.delete('/:id/clear', ChatController.clearChat);
 router.post('/:id/messages/:messageId/react', ChatController.toggleReaction);
 router.post('/:id/messages/:messageId/forward', ChatController.forwardMessage);
+router.patch('/:id/messages/:messageId', ChatController.editMessage);
+router.delete('/:id/messages/:messageId', ChatController.deleteMessage);
 
 router.post('/:id/members', ChatController.addMember);
 router.patch('/:id/members/:userId', ChatController.updateMemberRole);

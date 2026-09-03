@@ -118,6 +118,27 @@ export class ChatController {
         }
     }
 
+    // DELETE /node/api/chats/:id/icon  (remove group avatar)
+    static async deleteGroupIcon(req: AuthRequest, res: Response): Promise<void> {
+        try {
+            const userId = toInt(req.user!.id)!;
+            const convId = toInt(req.params.id);
+            if (!convId) return void res.status(400).json({ error: 'Invalid conversation id' });
+            const conversation = await ChatDbService.getConversation(convId);
+            if (!conversation) return void res.status(404).json({ error: 'Conversation not found' });
+            const myRole = await ChatDbService.getMemberRole(convId, userId);
+            if (myRole !== 'owner' && myRole !== 'admin') {
+                return void res.status(403).json({ error: 'Only group admins can change the icon' });
+            }
+            await ChatDbService.updateConversation(convId, { avatar_url: null });
+            await ChatDbService.addGroupHistory(convId, userId, 'avatar_removed', `removed the group photo`).catch(() => { });
+            res.json({ success: true, avatar_url: null });
+        } catch (error) {
+            console.error('[Chat] deleteGroupIcon error:', error);
+            res.status(500).json({ error: 'Failed to remove icon' });
+        }
+    }
+
     // POST /node/api/chats/dm { userId }
     static async createDM(req: AuthRequest, res: Response): Promise<void> {
         try {
@@ -158,6 +179,7 @@ export class ChatController {
                 createdBy: userId,
                 memberIds
             });
+            await ChatDbService.addGroupHistory(conversationId, userId, 'group_created', `created the group "${name}"`);
             const conversation = await ChatDbService.getConversation(conversationId);
             const members = await ChatDbService.getMembers(conversationId);
             res.json({ success: true, conversation: { ...conversation, members } });
@@ -172,6 +194,39 @@ export class ChatController {
         } catch (error) {
             console.error('[Chat] createGroup error:', error);
             res.status(500).json({ error: 'Failed to create group' });
+        }
+    }
+
+    // GET /node/api/chats/gifs?q=  (proxy to Tenor, requires GIF_API_KEY)
+    static async searchGifs(req: AuthRequest, res: Response): Promise<void> {
+        try {
+            const q = String(req.query.q || '').trim();
+            const key = process.env.GIF_API_KEY || '';
+            if (!q) return void res.json({ success: true, results: [] });
+            if (!key) return void res.json({
+                success: true,
+                results: [],
+                notice: 'GIF_API_KEY not configured on the server'
+            });
+            try {
+                const base = 'https://tenor.com/v2/search';
+                const url = `${base}?q=${encodeURIComponent(q)}&key=${encodeURIComponent(key)}&limit=24&media_filter=minimal&contentfilter=medium`;
+                const resp = await fetch(url);
+                const data: any = await resp.json();
+                const results = (data?.results || []).map((it: any) => ({
+                    url: it?.media_formats?.gif?.url || it?.media_formats?.tinygif?.url || null,
+                    preview: it?.media_formats?.tinygif?.url || null,
+                    name: (it?.title || 'gif') + '.gif',
+                    type: 'image/gif'
+                })).filter((r: any) => r.url);
+                res.json({ success: true, results });
+            } catch (e: any) {
+                console.error('[Chat] gif proxy error:', e);
+                res.json({ success: true, results: [], notice: e?.message || 'GIF search failed' });
+            }
+        } catch (error) {
+            console.error('[Chat] searchGifs error:', error);
+            res.status(500).json({ error: 'Failed to search gifs' });
         }
     }
 
@@ -214,6 +269,147 @@ export class ChatController {
         }
     }
 
+    // ==================== MESSAGE ACTIONS (edit/delete/pin/clear) ====================
+
+    // PATCH /node/api/chats/:id/messages/:messageId { content }
+    static async editMessage(req: AuthRequest, res: Response): Promise<void> {
+        try {
+            const userId = toInt(req.user!.id)!;
+            const convId = toInt(req.params.id);
+            const messageId = toInt(req.params.messageId);
+            const content = req.body?.content ? String(req.body.content).trim() : '';
+            if (!convId || !messageId || !content) {
+                return void res.status(400).json({ error: 'Content required' });
+            }
+            if (!(await ChatDbService.isMember(convId, userId))) {
+                return void res.status(403).json({ error: 'You are not a member of this conversation' });
+            }
+            const msg = await ChatDbService.getMessageById(messageId);
+            if (!msg || msg.conversation_id !== convId) {
+                return void res.status(404).json({ error: 'Message not found' });
+            }
+            if (toInt(msg.sender_id) !== userId) {
+                return void res.status(403).json({ error: 'You can only edit your own messages' });
+            }
+            await ChatDbService.editMessage(messageId, content);
+            const io = getIo(req);
+            if (io) io.to(`chat_${convId}`).emit('chat:message-edited', { conversationId: convId, messageId, content });
+            res.json({ success: true, messageId, content });
+        } catch (error) {
+            console.error('[Chat] editMessage error:', error);
+            res.status(500).json({ error: 'Failed to edit message' });
+        }
+    }
+
+    // DELETE /node/api/chats/:id/messages/:messageId
+    static async deleteMessage(req: AuthRequest, res: Response): Promise<void> {
+        try {
+            const userId = toInt(req.user!.id)!;
+            const convId = toInt(req.params.id);
+            const messageId = toInt(req.params.messageId);
+            if (!convId || !messageId) {
+                return void res.status(400).json({ error: 'Invalid request' });
+            }
+            if (!(await ChatDbService.isMember(convId, userId))) {
+                return void res.status(403).json({ error: 'You are not a member of this conversation' });
+            }
+            const msg = await ChatDbService.getMessageById(messageId);
+            if (!msg || msg.conversation_id !== convId) {
+                return void res.status(404).json({ error: 'Message not found' });
+            }
+            await ChatDbService.deleteMessage(messageId);
+            const io = getIo(req);
+            if (io) io.to(`chat_${convId}`).emit('chat:message-deleted', { conversationId: convId, messageId });
+            res.json({ success: true, messageId });
+        } catch (error) {
+            console.error('[Chat] deleteMessage error:', error);
+            res.status(500).json({ error: 'Failed to delete message' });
+        }
+    }
+
+    // POST /node/api/chats/:id/pin { messageId }  (messageId=null unpins)
+    static async pinMessage(req: AuthRequest, res: Response): Promise<void> {
+        try {
+            const userId = toInt(req.user!.id)!;
+            const convId = toInt(req.params.id);
+            const messageId = req.body?.messageId ? toInt(req.body.messageId) : null;
+            if (!convId) return void res.status(400).json({ error: 'Invalid request' });
+            if (!(await ChatDbService.isMember(convId, userId))) {
+                return void res.status(403).json({ error: 'You are not a member of this conversation' });
+            }
+            if (messageId && !(await ChatDbService.isMessageInConversation(messageId, convId))) {
+                return void res.status(404).json({ error: 'Message not found' });
+            }
+            await ChatDbService.pinMessage(convId, messageId);
+            const pinned = await ChatDbService.getPinnedMessage(convId);
+            const io = getIo(req);
+            if (io) io.to(`chat_${convId}`).emit('chat:pinned', { conversationId: convId, messageId, pinned });
+            res.json({ success: true, pinned });
+        } catch (error) {
+            console.error('[Chat] pinMessage error:', error);
+            res.status(500).json({ error: 'Failed to pin message' });
+        }
+    }
+
+    // GET /node/api/chats/:id/pin
+    static async getPinnedMessage(req: AuthRequest, res: Response): Promise<void> {
+        try {
+            const convId = toInt(req.params.id);
+            if (!convId) return void res.status(400).json({ error: 'Invalid request' });
+            const pinned = await ChatDbService.getPinnedMessage(convId);
+            res.json({ success: true, pinned });
+        } catch (error) {
+            console.error('[Chat] getPinnedMessage error:', error);
+            res.status(500).json({ error: 'Failed to load pinned message' });
+        }
+    }
+
+    // DELETE /node/api/chats/:id/clear
+    static async clearChat(req: AuthRequest, res: Response): Promise<void> {
+        try {
+            const userId = toInt(req.user!.id)!;
+            const convId = toInt(req.params.id);
+            if (!convId) return void res.status(400).json({ error: 'Invalid request' });
+            if (!(await ChatDbService.isMember(convId, userId))) {
+                return void res.status(403).json({ error: 'You are not a member of this conversation' });
+            }
+            await ChatDbService.clearChat(convId);
+            const io = getIo(req);
+            if (io) io.to(`chat_${convId}`).emit('chat:cleared', { conversationId: convId });
+            res.json({ success: true, conversationId: convId });
+        } catch (error) {
+            console.error('[Chat] clearChat error:', error);
+            res.status(500).json({ error: 'Failed to clear chat' });
+        }
+    }
+
+    // GET /node/api/chats/:id/search?q=...
+    static async searchMessages(req: AuthRequest, res: Response): Promise<void> {
+        try {
+            const convId = toInt(req.params.id);
+            const q = (req.query.q as string) || '';
+            if (!convId) return void res.status(400).json({ error: 'Invalid request' });
+            const messages = await ChatDbService.searchMessagesInConversation(convId, q);
+            res.json({ success: true, messages });
+        } catch (error) {
+            console.error('[Chat] searchMessages error:', error);
+            res.status(500).json({ error: 'Failed to search messages' });
+        }
+    }
+
+    // GET /node/api/chats/:id/history
+    static async getGroupHistory(req: AuthRequest, res: Response): Promise<void> {
+        try {
+            const convId = toInt(req.params.id);
+            if (!convId) return void res.status(400).json({ error: 'Invalid request' });
+            const history = await ChatDbService.getGroupHistory(convId);
+            res.json({ success: true, history });
+        } catch (error) {
+            console.error('[Chat] getGroupHistory error:', error);
+            res.status(500).json({ error: 'Failed to load history' });
+        }
+    }
+
     // POST /node/api/chats/:id/messages { content, message_type, attachment_url, reply_to_message_id }
     static async sendMessage(req: AuthRequest, res: Response): Promise<void> {
         try {
@@ -238,6 +434,8 @@ export class ChatController {
                 content: content || null,
                 attachment_url: req.body.attachment_url || null,
                 attachment_name: req.body.attachment_name || null,
+                attachment_size: toInt(req.body.attachment_size),
+                attachment_type: req.body.attachment_type || null,
                 reply_to_message_id: replyToId || null
             });
 
@@ -273,6 +471,8 @@ export class ChatController {
                 content: content || null,
                 attachment_url: req.body.attachment_url || null,
                 attachment_name: req.body.attachment_name || null,
+                attachment_size: toInt(req.body.attachment_size),
+                attachment_type: req.body.attachment_type || null,
                 reply_to,
                 reactions: [],
                 is_read: false,
@@ -395,6 +595,7 @@ export class ChatController {
 
             // Unhide if previously soft-deleted
             await ChatDbService.unhideConversationForUser(convId, targetId);
+            await ChatDbService.addGroupHistory(convId, userId, 'member_added', `added ${targetId}`).catch(() => { });
 
             const members = await ChatDbService.getMembers(convId);
             res.json({ success: true, members });
@@ -453,6 +654,7 @@ export class ChatController {
             }
 
             await ChatDbService.updateMemberRole(convId, targetId, newRole);
+            await ChatDbService.addGroupHistory(convId, userId, 'role_changed', `made ${targetId} ${newRole}`).catch(() => { });
             const members = await ChatDbService.getMembers(convId);
             res.json({ success: true, members });
         } catch (error) {
@@ -487,6 +689,7 @@ export class ChatController {
                 return void res.status(403).json({ error: 'Only the owner can remove admins' });
             }
             await ChatDbService.removeMember(convId, targetId);
+            await ChatDbService.addGroupHistory(convId, userId, 'member_removed', `removed ${targetId}`).catch(() => { });
             const members = await ChatDbService.getMembers(convId);
             res.json({ success: true, members });
         } catch (error) {
@@ -518,6 +721,15 @@ export class ChatController {
                 description: req.body.description !== undefined ? String(req.body.description) : undefined,
                 avatar_url: req.body.avatar_url !== undefined ? req.body.avatar_url : undefined
             });
+            if (req.body.name !== undefined) {
+                await ChatDbService.addGroupHistory(convId, userId, 'name_changed', `changed the group name to "${req.body.name}"`).catch(() => { });
+            }
+            if (req.body.description !== undefined) {
+                await ChatDbService.addGroupHistory(convId, userId, 'description_changed', `changed the group description`).catch(() => { });
+            }
+            if (req.body.avatar_url !== undefined && req.body.avatar_url !== null) {
+                await ChatDbService.addGroupHistory(convId, userId, 'avatar_changed', `changed the group photo`).catch(() => { });
+            }
             const updated = await ChatDbService.getConversation(convId);
             res.json({ success: true, conversation: updated });
         } catch (error) {

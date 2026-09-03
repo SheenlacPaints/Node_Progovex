@@ -90,6 +90,8 @@ export function registerChatSocketHandlers(io: Server): void {
             message_type?: string;
             attachment_url?: string;
             attachment_name?: string;
+            attachment_size?: number;
+            attachment_type?: string;
             reply_to_message_id?: number;
         }) => {
             const uId = await getUserIdFromSocket(socket);
@@ -110,6 +112,8 @@ export function registerChatSocketHandlers(io: Server): void {
                     content: content || null,
                     attachment_url: data.attachment_url || null,
                     attachment_name: data.attachment_name || null,
+                    attachment_size: data.attachment_size || null,
+                    attachment_type: data.attachment_type || null,
                     reply_to_message_id: replyToId || null
                 });
 
@@ -147,6 +151,8 @@ export function registerChatSocketHandlers(io: Server): void {
                     content: content || null,
                     attachment_url: data.attachment_url || null,
                     attachment_name: data.attachment_name || null,
+                    attachment_size: data.attachment_size || null,
+                    attachment_type: data.attachment_type || null,
                     reply_to,
                     reactions: [],
                     is_read: false,
@@ -188,6 +194,73 @@ export function registerChatSocketHandlers(io: Server): void {
                 });
             } catch (err) {
                 console.error('[ChatSocket] react error:', err);
+            }
+        });
+
+        // EDIT A MESSAGE
+        socket.on('chat:edit', async (data: { conversationId: number; messageId: number; content: string }) => {
+            const uId = await getUserIdFromSocket(socket);
+            const convId = toInt(data?.conversationId);
+            const messageId = toInt(data?.messageId);
+            const content = data?.content ? String(data.content).trim() : '';
+            if (!uId || !convId || !messageId || !content) return;
+            try {
+                if (!(await ChatDbService.isMember(convId, uId))) return;
+                const msg = await ChatDbService.getMessageById(messageId);
+                if (!msg || msg.conversation_id !== convId || toInt(msg.sender_id) !== uId) return;
+                await ChatDbService.editMessage(messageId, content);
+                const payload = { conversationId: convId, messageId, content };
+                io.to(`chat_${convId}`).emit('chat:message-edited', payload);
+            } catch (err) {
+                console.error('[ChatSocket] edit error:', err);
+            }
+        });
+
+        // DELETE A MESSAGE
+        socket.on('chat:delete', async (data: { conversationId: number; messageId: number }) => {
+            const uId = await getUserIdFromSocket(socket);
+            const convId = toInt(data?.conversationId);
+            const messageId = toInt(data?.messageId);
+            if (!uId || !convId || !messageId) return;
+            try {
+                if (!(await ChatDbService.isMember(convId, uId))) return;
+                const msg = await ChatDbService.getMessageById(messageId);
+                if (!msg || msg.conversation_id !== convId || toInt(msg.sender_id) !== uId) return;
+                await ChatDbService.deleteMessage(messageId);
+                io.to(`chat_${convId}`).emit('chat:message-deleted', { conversationId: convId, messageId });
+            } catch (err) {
+                console.error('[ChatSocket] delete error:', err);
+            }
+        });
+
+        // PIN / UNPIN A MESSAGE
+        socket.on('chat:pin', async (data: { conversationId: number; messageId: number | null }) => {
+            const uId = await getUserIdFromSocket(socket);
+            const convId = toInt(data?.conversationId);
+            const messageId = data?.messageId ? toInt(data.messageId) : null;
+            if (!uId || !convId) return;
+            try {
+                if (!(await ChatDbService.isMember(convId, uId))) return;
+                if (messageId && !(await ChatDbService.isMessageInConversation(messageId, convId))) return;
+                await ChatDbService.pinMessage(convId, messageId);
+                const pinned = await ChatDbService.getPinnedMessage(convId);
+                io.to(`chat_${convId}`).emit('chat:pinned', { conversationId: convId, messageId, pinned });
+            } catch (err) {
+                console.error('[ChatSocket] pin error:', err);
+            }
+        });
+
+        // CLEAR CHAT
+        socket.on('chat:clear', async (data: { conversationId: number }) => {
+            const uId = await getUserIdFromSocket(socket);
+            const convId = toInt(data?.conversationId);
+            if (!uId || !convId) return;
+            try {
+                if (!(await ChatDbService.isMember(convId, uId))) return;
+                await ChatDbService.clearChat(convId);
+                io.to(`chat_${convId}`).emit('chat:cleared', { conversationId: convId });
+            } catch (err) {
+                console.error('[ChatSocket] clear error:', err);
             }
         });
 

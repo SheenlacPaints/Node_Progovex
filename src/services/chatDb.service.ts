@@ -72,7 +72,28 @@ export class ChatDbService {
                      is_online BIT NOT NULL DEFAULT 0,
                      last_seen_at DATETIME2 NULL,
                      updated_at DATETIME2 NOT NULL DEFAULT GETUTCDATE()
-                 )`
+                 )`,
+                `IF COL_LENGTH('nt_chat_messages', 'edited') IS NULL
+                 ALTER TABLE nt_chat_messages ADD edited BIT NOT NULL DEFAULT 0`,
+                `IF COL_LENGTH('nt_chat_messages', 'is_deleted') IS NULL
+                 ALTER TABLE nt_chat_messages ADD is_deleted BIT NOT NULL DEFAULT 0`,
+                `IF COL_LENGTH('nt_chat_messages', 'attachment_size') IS NULL
+                 ALTER TABLE nt_chat_messages ADD attachment_size BIGINT NULL`,
+                `IF COL_LENGTH('nt_chat_messages', 'attachment_type') IS NULL
+                 ALTER TABLE nt_chat_messages ADD attachment_type NVARCHAR(100) NULL`,
+                `IF COL_LENGTH('nt_chat_conversations', 'pinned_message_id') IS NULL
+                 ALTER TABLE nt_chat_conversations ADD pinned_message_id INT NULL`,
+                `IF NOT EXISTS (SELECT * FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME = 'nt_chat_group_history')
+                 CREATE TABLE nt_chat_group_history (
+                     id INT IDENTITY(1,1) PRIMARY KEY,
+                     conversation_id INT NOT NULL,
+                     actor_id INT NOT NULL,
+                     action_type NVARCHAR(50) NOT NULL,
+                     detail NVARCHAR(MAX) NULL,
+                     created_at DATETIME2 NOT NULL DEFAULT GETUTCDATE()
+                 )`,
+                `IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_chat_group_history_conv' AND object_id = OBJECT_ID('nt_chat_group_history'))
+                 CREATE INDEX IX_chat_group_history_conv ON nt_chat_group_history (conversation_id)`
             ];
             for (const sql of statements) {
                 try {
@@ -388,6 +409,7 @@ export class ChatDbService {
         const rows = await executeQuery<any>(
             `SELECT TOP (@limit) msg.id, msg.conversation_id, msg.sender_id, msg.message_type, msg.content,
                     msg.attachment_url, msg.attachment_name, msg.reply_to_message_id, msg.created_at,
+                    msg.edited, msg.is_deleted, msg.attachment_size, msg.attachment_type,
                     COALESCE(NULLIF(LTRIM(RTRIM(u.cuser_name)), ''), CONCAT(u.cfirst_name, ' ', u.clast_name), u.cfirst_name) as sender_name,
                     u.cprofile_image_name as sender_avatar,
                     r.id as reply_id, r.sender_id as reply_sender_id, r.message_type as reply_message_type,
@@ -478,12 +500,14 @@ export class ChatDbService {
         content?: string;
         attachment_url?: string;
         attachment_name?: string;
+        attachment_size?: number;
+        attachment_type?: string;
         reply_to_message_id?: number | null;
     }): Promise<any> {
         const insertResult = await executeNonQuery(
-            `INSERT INTO nt_chat_messages (conversation_id, sender_id, message_type, content, attachment_url, attachment_name, reply_to_message_id)
+            `INSERT INTO nt_chat_messages (conversation_id, sender_id, message_type, content, attachment_url, attachment_name, reply_to_message_id, attachment_size, attachment_type)
              OUTPUT INSERTED.id, INSERTED.created_at
-             VALUES (@convId, @senderId, @type, @content, @attachmentUrl, @attachmentName, @replyTo)`,
+             VALUES (@convId, @senderId, @type, @content, @attachmentUrl, @attachmentName, @replyTo, @attachmentSize, @attachmentType)`,
             {
                 convId: data.conversation_id,
                 senderId: data.sender_id,
@@ -491,12 +515,99 @@ export class ChatDbService {
                 content: data.content || null,
                 attachmentUrl: data.attachment_url || null,
                 attachmentName: data.attachment_name || null,
-                replyTo: data.reply_to_message_id || null
+                replyTo: data.reply_to_message_id || null,
+                attachmentSize: data.attachment_size || null,
+                attachmentType: data.attachment_type || null
             }
         );
         await executeNonQuery(`UPDATE nt_chat_conversations SET updated_at = GETUTCDATE() WHERE id = @convId`, { convId: data.conversation_id });
         const row = insertResult.recordset[0];
         return { id: row.id, created_at: row.created_at };
+    }
+
+    static async editMessage(messageId: number, content: string): Promise<void> {
+        await executeNonQuery(
+            `UPDATE nt_chat_messages SET content = @content, edited = 1 WHERE id = @id`,
+            { content, id: messageId }
+        );
+    }
+
+    static async deleteMessage(messageId: number): Promise<void> {
+        await executeNonQuery(
+            `UPDATE nt_chat_messages SET is_deleted = 1, content = NULL WHERE id = @id`,
+            { id: messageId }
+        );
+    }
+
+    static async pinMessage(conversationId: number, messageId: number | null): Promise<void> {
+        await executeNonQuery(
+            `UPDATE nt_chat_conversations SET pinned_message_id = @messageId, updated_at = GETUTCDATE() WHERE id = @convId`,
+            { convId: conversationId, messageId }
+        );
+    }
+
+    static async getPinnedMessage(conversationId: number): Promise<any | null> {
+        const rows = await executeQuery<any>(
+            `SELECT msg.id, msg.conversation_id, msg.sender_id, msg.message_type, msg.content, msg.attachment_url, msg.attachment_name, msg.created_at,
+                    COALESCE(NULLIF(LTRIM(RTRIM(u.cuser_name)), ''), CONCAT(u.cfirst_name, ' ', u.clast_name), u.cfirst_name) as sender_name
+             FROM nt_chat_conversations c
+             JOIN nt_chat_messages msg ON msg.id = c.pinned_message_id
+             JOIN users u ON u.ID = msg.sender_id
+             WHERE c.id = @convId AND c.pinned_message_id IS NOT NULL`,
+            { convId: conversationId }
+        );
+        return rows && rows.length > 0 ? rows[0] : null;
+    }
+
+    static async clearChat(conversationId: number): Promise<void> {
+        await executeNonQuery(
+            `DELETE FROM nt_chat_message_reactions WHERE message_id IN (SELECT id FROM nt_chat_messages WHERE conversation_id = @id)`,
+            { id: conversationId }
+        );
+        await executeNonQuery(
+            `DELETE FROM nt_chat_messages WHERE conversation_id = @id`,
+            { id: conversationId }
+        );
+        await executeNonQuery(
+            `UPDATE nt_chat_conversations SET pinned_message_id = NULL, updated_at = GETUTCDATE() WHERE id = @id`,
+            { id: conversationId }
+        );
+    }
+
+    static async searchMessagesInConversation(conversationId: number, query: string, limit = 100): Promise<any[]> {
+        const q = query ? query.trim() : '';
+        if (!q) return [];
+        const rows = await executeQuery<any>(
+            `SELECT TOP (@limit) msg.id, msg.conversation_id, msg.sender_id, msg.message_type, msg.content, msg.attachment_url, msg.attachment_name, msg.created_at,
+                    COALESCE(NULLIF(LTRIM(RTRIM(u.cuser_name)), ''), CONCAT(u.cfirst_name, ' ', u.clast_name), u.cfirst_name) as sender_name
+             FROM nt_chat_messages msg
+             JOIN users u ON u.ID = msg.sender_id
+             WHERE msg.conversation_id = @convId AND msg.is_deleted = 0 AND msg.content LIKE @term
+             ORDER BY msg.created_at DESC`,
+            { convId: conversationId, term: `%${q}%`, limit }
+        );
+        return rows || [];
+    }
+
+    static async addGroupHistory(conversationId: number, actorId: number, actionType: string, detail?: string): Promise<void> {
+        await executeNonQuery(
+            `INSERT INTO nt_chat_group_history (conversation_id, actor_id, action_type, detail)
+             VALUES (@convId, @actorId, @actionType, @detail)`,
+            { convId: conversationId, actorId, actionType, detail: detail || null }
+        );
+    }
+
+    static async getGroupHistory(conversationId: number, limit = 100): Promise<any[]> {
+        const rows = await executeQuery<any>(
+            `SELECT TOP (@limit) h.id, h.conversation_id, h.action_type, h.detail, h.created_at,
+                    COALESCE(NULLIF(LTRIM(RTRIM(u.cuser_name)), ''), CONCAT(u.cfirst_name, ' ', u.clast_name), u.cfirst_name) as actor_name
+             FROM nt_chat_group_history h
+             JOIN users u ON u.ID = h.actor_id
+             WHERE h.conversation_id = @convId
+             ORDER BY h.created_at DESC`,
+            { convId: conversationId, limit }
+        );
+        return rows || [];
     }
 
     // ==================== REACTIONS ====================
