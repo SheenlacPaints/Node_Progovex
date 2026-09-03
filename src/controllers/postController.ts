@@ -304,20 +304,16 @@ export const createPost = async (req: AuthRequest, res: Response) => {
         );
 
         console.log('AdminDirUrl:', AdminDirUrl);
-
-        // send push notification for the post owner
-        const tokens = [
-            "eJKLNz3XQNyXc0lDxEQ4si:APA91bEGW9amRuw56MdElJNt-HaDJ2TpKCp1oF7uD020gsheDzDz4IQjcM83SVMiXm7VzSSSxPflJsOKD8CpP3imHNOcMNhdhCekSFXrFS3I9oC3lqaMsmg",
-            "cPO8CltPT3ef_GWoN0VLzp:APA91bFzQ7RKOnDvPC0GFLSe8j4jLx2iwjFjfTvRYw0yyI2yGoQza_BQzRJNTEGFo7U93G-CAgb9gO5KpCVT1XWtAh16lS2doHZT-zLhg1NxkXpaARzYeleavggG5hLgKnTPJkgY0z0R"
-        ];
-        let notifyObj = {
-            userUrl: AdminDirUrl,
-            title: "Sheenlac Connect Notification",
-            body: `A new post has been submitted by ${userDetails[0]?.cfirst_name || 'Someone'} and is awaiting your approval. Please review the post and take the appropriate action.`
+        if (AdminDirUrl.length > 0) {
+            // send push notification for the post owner
+            let notifyObj = {
+                userUrl: AdminDirUrl,
+                title: "Sheenlac Connect Notification",
+                body: `A new post has been submitted by ${userDetails[0]?.cfirst_name || 'Someone'} and is awaiting your approval. Please review the post and take the appropriate action.`
+            }
+            const token = await new FirebaseTokenService().sendSelectedUserNotify(notifyObj);
+            console.log('🔔 Notification sent:', token);
         }
-        const token = await new FirebaseTokenService().sendSelectedUserNotify(notifyObj);
-        console.log('🔔 Notification sent:', token);
-        
 
         const newPost = {
             id: postId,
@@ -901,18 +897,17 @@ export const addComment = async (req: AuthRequest, res: Response) => {
             );
 
             // send push notification for the post owner
-            const tokens = [
-                "eJKLNz3XQNyXc0lDxEQ4si:APA91bEGW9amRuw56MdElJNt-HaDJ2TpKCp1oF7uD020gsheDzDz4IQjcM83SVMiXm7VzSSSxPflJsOKD8CpP3imHNOcMNhdhCekSFXrFS3I9oC3lqaMsmg",
-                "cPO8CltPT3ef_GWoN0VLzp:APA91bFzQ7RKOnDvPC0GFLSe8j4jLx2iwjFjfTvRYw0yyI2yGoQza_BQzRJNTEGFo7U93G-CAgb9gO5KpCVT1XWtAh16lS2doHZT-zLhg1NxkXpaARzYeleavggG5hLgKnTPJkgY0z0R"
-            ];
             console.log('🔔 Sending notification to post owner:', commentDetails);
-            let notifyObj = {
-                userUrl: commentDetails,
-                title: "Sheenlac Connect Notification",
-                body: `Your post was commented on by ${userDetails[0]?.cfirst_name || 'Someone'}. Remarks: ${commentRemarks}`
+            if(commentDetails[0].direct_url) {
+                let notifyObj = {
+                    userUrl: commentDetails,
+                    title: "Sheenlac Connect Notification",
+                    body: `Your post was commented on by ${userDetails[0]?.cfirst_name || 'Someone'}. Remarks: ${commentRemarks}`
+                }
+                const token = await new FirebaseTokenService().sendSelectedUserNotify(notifyObj);
+                console.log('🔔 Notification sent:', token);
             }
-            const token = await new FirebaseTokenService().sendSelectedUserNotify(notifyObj);
-            console.log('🔔 Notification sent:', token);
+
         }
 
         // Send HTTP response
@@ -1050,17 +1045,15 @@ export const addReaction = async (req: AuthRequest, res: Response) => {
                 );
                 
                 // send push notification for the post owner
-                const tokens = [
-                    "eJKLNz3XQNyXc0lDxEQ4si:APA91bEGW9amRuw56MdElJNt-HaDJ2TpKCp1oF7uD020gsheDzDz4IQjcM83SVMiXm7VzSSSxPflJsOKD8CpP3imHNOcMNhdhCekSFXrFS3I9oC3lqaMsmg",
-                    "cPO8CltPT3ef_GWoN0VLzp:APA91bFzQ7RKOnDvPC0GFLSe8j4jLx2iwjFjfTvRYw0yyI2yGoQza_BQzRJNTEGFo7U93G-CAgb9gO5KpCVT1XWtAh16lS2doHZT-zLhg1NxkXpaARzYeleavggG5hLgKnTPJkgY0z0R"
-                ];
-                let notifyObj = {
-                    userUrl: userDirectUrl,
-                    title: "Sheenlac Connect Notification",
-                    body: `Your post was liked by ${userDetails[0]?.cfirst_name || 'Someone'}`
+                if(userDirectUrl.length > 0) {
+                    let notifyObj = {
+                        userUrl: userDirectUrl,
+                        title: "Sheenlac Connect Notification",
+                        body: `Your post was liked by ${userDetails[0]?.cfirst_name || 'Someone'}`
+                    }
+                    const token = await new FirebaseTokenService().sendSelectedUserNotify(notifyObj);
+                    console.log('🔔 Notification sent:', token);
                 }
-                const token = await new FirebaseTokenService().sendSelectedUserNotify(notifyObj);
-                console.log('🔔 Notification sent:', token);
             }
 
             isLiked = true;
@@ -1405,18 +1398,15 @@ export const savePost = async (req: AuthRequest, res: Response) => {
         );
 
         // send push notification for the post owner
-        const tokens = [
-            "eJKLNz3XQNyXc0lDxEQ4si:APA91bEGW9amRuw56MdElJNt-HaDJ2TpKCp1oF7uD020gsheDzDz4IQjcM83SVMiXm7VzSSSxPflJsOKD8CpP3imHNOcMNhdhCekSFXrFS3I9oC3lqaMsmg",
-            "cPO8CltPT3ef_GWoN0VLzp:APA91bFzQ7RKOnDvPC0GFLSe8j4jLx2iwjFjfTvRYw0yyI2yGoQza_BQzRJNTEGFo7U93G-CAgb9gO5KpCVT1XWtAh16lS2doHZT-zLhg1NxkXpaARzYeleavggG5hLgKnTPJkgY0z0R"
-        ];
-        let notifyObj = {
-            userUrl: savePostUrl,
-            title: "Sheenlac Connect Notification",
-            body: `Your post was saved by ${userDetails[0]?.cfirst_name || 'Someone'}`
+        if(savePostUrl.length > 0) {
+            let notifyObj = {
+                userUrl: savePostUrl,
+                title: "Sheenlac Connect Notification",
+                body: `Your post was saved by ${userDetails[0]?.cfirst_name || 'Someone'}`
+            }
+            const token = await new FirebaseTokenService().sendSelectedUserNotify(notifyObj);
+            console.log('🔔 Notification sent:', token);
         }
-        const token = await new FirebaseTokenService().sendSelectedUserNotify(notifyObj);
-        console.log('🔔 Notification sent:', token);
-
 
         res.json({ success: true, message: 'Post saved' });
     } catch (error) {
@@ -1533,17 +1523,15 @@ export const reportPost = async (req: AuthRequest, res: Response) => {
       );
 
         // send push notification for the post owner
-        const tokens = [
-            "eJKLNz3XQNyXc0lDxEQ4si:APA91bEGW9amRuw56MdElJNt-HaDJ2TpKCp1oF7uD020gsheDzDz4IQjcM83SVMiXm7VzSSSxPflJsOKD8CpP3imHNOcMNhdhCekSFXrFS3I9oC3lqaMsmg",
-            "cPO8CltPT3ef_GWoN0VLzp:APA91bFzQ7RKOnDvPC0GFLSe8j4jLx2iwjFjfTvRYw0yyI2yGoQza_BQzRJNTEGFo7U93G-CAgb9gO5KpCVT1XWtAh16lS2doHZT-zLhg1NxkXpaARzYeleavggG5hLgKnTPJkgY0z0R"
-        ];
-        let notifyObj = {
-            userUrl: reportDetails,
-            title: "Sheenlac Connect Notification",
-            body: `Your post was reported by ${userDetails[0]?.cfirst_name || 'Someone'}. Remarks: ${reportRemarks}`
+        if(reportDetails[0].direct_url) {            
+            let notifyObj = {
+                userUrl: reportDetails,
+                title: "Sheenlac Connect Notification",
+                body: `Your post was reported by ${userDetails[0]?.cfirst_name || 'Someone'}. Remarks: ${reportRemarks}`
+            }
+            const token = await new FirebaseTokenService().sendSelectedUserNotify(notifyObj);
+            console.log('🔔 Notification sent:', token);
         }
-        const token = await new FirebaseTokenService().sendSelectedUserNotify(notifyObj);
-        console.log('🔔 Notification sent:', token);
     }
     
 
@@ -1964,17 +1952,15 @@ export const resharePost = async (req: AuthRequest, res: Response) => {
         );
 
         // send push notification for the post owner
-        const tokens = [
-            "eJKLNz3XQNyXc0lDxEQ4si:APA91bEGW9amRuw56MdElJNt-HaDJ2TpKCp1oF7uD020gsheDzDz4IQjcM83SVMiXm7VzSSSxPflJsOKD8CpP3imHNOcMNhdhCekSFXrFS3I9oC3lqaMsmg",
-            "cPO8CltPT3ef_GWoN0VLzp:APA91bFzQ7RKOnDvPC0GFLSe8j4jLx2iwjFjfTvRYw0yyI2yGoQza_BQzRJNTEGFo7U93G-CAgb9gO5KpCVT1XWtAh16lS2doHZT-zLhg1NxkXpaARzYeleavggG5hLgKnTPJkgY0z0R"
-        ];
-        let notifyObj = {
-            userUrl: resharePostUrl,
-            title: "Sheenlac Connect Notification",
-            body: notificationContent
+        if(resharePostUrl.length > 0) {
+            let notifyObj = {
+                userUrl: resharePostUrl,
+                title: "Sheenlac Connect Notification",
+                body: notificationContent
+            }
+            const token = await new FirebaseTokenService().sendSelectedUserNotify(notifyObj);
+            console.log('🔔 Notification sent:', token);
         }
-        const token = await new FirebaseTokenService().sendSelectedUserNotify(notifyObj);
-        console.log('🔔 Notification sent:', token);
 
         // Update share count on original post
         await executeNonQuery(

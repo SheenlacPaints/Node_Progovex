@@ -299,8 +299,8 @@ export const approvePost = async (req: AuthRequest, res: Response) => {
             title: "Sheenlac Connect Notification",
             body: `${post.username || 'Someone'} has shared a new post on Sheenlac Connect. The post is now available for everyone to view.`
         }
-       // const token = await new FirebaseTokenService().sendAllNotification(notifyObj);
-       // console.log('🔔 Notification sent:', token);
+       const token = await new FirebaseTokenService().sendAllNotification(notifyObj);
+       console.log('🔔 Notification sent:', token);
     }
 
     // Get the approved post with all details including user info and parsed data
@@ -460,17 +460,16 @@ export const rejectPost = async (req: AuthRequest, res: Response) => {
       );
 
         // send push notification for the post owner
-        const tokens = [
-            "eJKLNz3XQNyXc0lDxEQ4si:APA91bEGW9amRuw56MdElJNt-HaDJ2TpKCp1oF7uD020gsheDzDz4IQjcM83SVMiXm7VzSSSxPflJsOKD8CpP3imHNOcMNhdhCekSFXrFS3I9oC3lqaMsmg",
-            "cPO8CltPT3ef_GWoN0VLzp:APA91bFzQ7RKOnDvPC0GFLSe8j4jLx2iwjFjfTvRYw0yyI2yGoQza_BQzRJNTEGFo7U93G-CAgb9gO5KpCVT1XWtAh16lS2doHZT-zLhg1NxkXpaARzYeleavggG5hLgKnTPJkgY0z0R"
-        ];
-        let notifyObj = {
+        if(rejectPostUrl.length > 0){
+          let notifyObj = {
             userUrl: rejectPostUrl,
             title: "Sheenlac Connect Notification",
             body: `Your post was Approval Rejected for publication. Reason: ${rejectionRemark || 'No reason provided'}. Please review the feedback and make the necessary changes before resubmitting.`
+          }
+          const token = await new FirebaseTokenService().sendSelectedUserNotify(notifyObj);
+          console.log('🔔 Notification sent:', token);
         }
-        const token = await new FirebaseTokenService().sendSelectedUserNotify(notifyObj);
-        console.log('🔔 Notification sent:', token);
+
     }
 
     // Log activity
@@ -1017,17 +1016,15 @@ export const approveReportPost = async (req: AuthRequest, res: Response) => {
       
 
         // send push notification for the post owner
-        const tokens = [
-            "eJKLNz3XQNyXc0lDxEQ4si:APA91bEGW9amRuw56MdElJNt-HaDJ2TpKCp1oF7uD020gsheDzDz4IQjcM83SVMiXm7VzSSSxPflJsOKD8CpP3imHNOcMNhdhCekSFXrFS3I9oC3lqaMsmg",
-            "cPO8CltPT3ef_GWoN0VLzp:APA91bFzQ7RKOnDvPC0GFLSe8j4jLx2iwjFjfTvRYw0yyI2yGoQza_BQzRJNTEGFo7U93G-CAgb9gO5KpCVT1XWtAh16lS2doHZT-zLhg1NxkXpaARzYeleavggG5hLgKnTPJkgY0z0R"
-        ];
+      if(approveReportUrl.length > 0){
         let notifyObj = {
-            userUrl: approveReportUrl,
-            title: "Sheenlac Connect Notification",
-            body: notificationContent
+          userUrl: approveReportUrl,
+          title: "Sheenlac Connect Notification",
+          body: notificationContent
         }
         const token = await new FirebaseTokenService().sendSelectedUserNotify(notifyObj);
         console.log('🔔 Notification sent:', token);
+      }
 
     if (result.rowsAffected && result.rowsAffected[0] === 0) {
       return res.status(404).json({
@@ -1097,17 +1094,15 @@ export const removeReportPost = async (req: AuthRequest, res: Response) => {
       );
 
         // send push notification for the post owner
-        const tokens = [
-            "eJKLNz3XQNyXc0lDxEQ4si:APA91bEGW9amRuw56MdElJNt-HaDJ2TpKCp1oF7uD020gsheDzDz4IQjcM83SVMiXm7VzSSSxPflJsOKD8CpP3imHNOcMNhdhCekSFXrFS3I9oC3lqaMsmg",
-            "cPO8CltPT3ef_GWoN0VLzp:APA91bFzQ7RKOnDvPC0GFLSe8j4jLx2iwjFjfTvRYw0yyI2yGoQza_BQzRJNTEGFo7U93G-CAgb9gO5KpCVT1XWtAh16lS2doHZT-zLhg1NxkXpaARzYeleavggG5hLgKnTPJkgY0z0R"
-        ];
+      if(removeReportUrl.length > 0){
         let notifyObj = {
-            userUrl: removeReportUrl,
-            title: "Sheenlac Connect Notification",
-            body: notificationContent
+          userUrl: removeReportUrl,
+          title: "Sheenlac Connect Notification",
+          body: notificationContent
         }
         const token = await new FirebaseTokenService().sendSelectedUserNotify(notifyObj);
         console.log('🔔 Notification sent:', token);
+      }
 
     if (result.rowsAffected && result.rowsAffected[0] === 0) {
       return res.status(404).json({
