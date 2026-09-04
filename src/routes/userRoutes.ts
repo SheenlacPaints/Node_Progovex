@@ -14,6 +14,7 @@ import {
     getUserNotifications,
     markNotificationRead,
     deleteNotification,
+    clearAllNotifications,
     getUserStats,
     getActivityLog,
     changePassword,
@@ -54,6 +55,7 @@ router.get('/notifications', authenticateToken, getNotifications);
 router.get('/notifications/user', authenticateToken, getUserNotifications);
 router.put('/notifications/:id/read', authenticateToken, markNotificationRead);
 router.put('/notifications/read-all', authenticateToken, markAllAsRead);
+router.delete('/notifications', authenticateToken, clearAllNotifications);
 router.delete('/notifications/:id', authenticateToken, deleteNotification);
 router.put('/notifications/update', authenticateToken, updateUserNotifications);
 

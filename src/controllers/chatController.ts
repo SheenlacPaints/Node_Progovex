@@ -4,6 +4,7 @@ import path from 'path';
 import fs from 'fs';
 import { AuthRequest } from '../middleware/auth';
 import { ChatDbService } from '../services/chatDb.service';
+import { pushChatNotifications, pushGroupNotification } from '../services/chatNotification.service';
 
 function toInt(val: any): number | undefined {
     if (val === undefined || val === null) return undefined;
@@ -191,6 +192,16 @@ export class ChatController {
                     }
                 });
             }
+            // Toolbar bell notification: "<creator> added you to the group".
+            const creatorInfo = await ChatDbService.getUsersByIds([userId]).catch(() => []);
+            await pushGroupNotification(
+                io,
+                conversationId,
+                conversation,
+                userId,
+                creatorInfo?.[0]?.full_name || 'User',
+                members.map((m: any) => toInt(m.user_id))
+            );
         } catch (error) {
             console.error('[Chat] createGroup error:', error);
             res.status(500).json({ error: 'Failed to create group' });
@@ -483,10 +494,78 @@ export class ChatController {
                 io.to(`chat_${convId}`).emit('chat:message', payload);
                 await broadcastToUserRooms(io, convId, 'chat:message', payload, userId);
             }
+
+            // Toolbar notifications for members who are not viewing this chat
+            // (REST fallback path - same behaviour as the socket handler).
+            await pushChatNotifications(io, convId, payload, userId);
+
             res.json({ success: true, message: payload });
         } catch (error) {
             console.error('[Chat] sendMessage error:', error);
             res.status(500).json({ error: 'Failed to send message' });
+        }
+    }
+
+    // GET /node/api/chats/notifications?page=&limit=
+    static async listChatNotifications(req: AuthRequest, res: Response): Promise<void> {
+        try {
+            const userId = toInt(req.user!.id)!;
+            const page = Math.max(1, toInt(req.query.page) || 1);
+            const limit = Math.min(100, Math.max(1, toInt(req.query.limit) || 30));
+            const data = await ChatDbService.getChatNotifications(userId, page, limit);
+            res.json({
+                success: true,
+                notifications: data.notifications,
+                unreadCount: data.unreadCount,
+                page,
+                limit
+            });
+        } catch (error) {
+            console.error('[Chat] listChatNotifications error:', error);
+            res.status(500).json({ error: 'Failed to load chat notifications' });
+        }
+    }
+
+    // PUT /node/api/chats/notifications/read { conversationId }
+    static async markChatNotificationsRead(req: AuthRequest, res: Response): Promise<void> {
+        try {
+            const userId = toInt(req.user!.id)!;
+            const conversationId = toInt(req.body?.conversationId);
+            if (!conversationId) {
+                return void res.status(400).json({ error: 'conversationId required' });
+            }
+            if (!(await ChatDbService.isMember(conversationId, userId))) {
+                return void res.status(403).json({ error: 'Not a member of this conversation' });
+            }
+            const rowsAffected = await ChatDbService.markChatNotificationsRead(conversationId, userId);
+            res.json({ success: true, rowsAffected });
+        } catch (error) {
+            console.error('[Chat] markChatNotificationsRead error:', error);
+            res.status(500).json({ error: 'Failed to update chat notifications' });
+        }
+    }
+
+    // PUT /node/api/chats/notifications/read-all
+    static async markAllChatNotificationsRead(req: AuthRequest, res: Response): Promise<void> {
+        try {
+            const userId = toInt(req.user!.id)!;
+            const rowsAffected = await ChatDbService.markAllChatNotificationsRead(userId);
+            res.json({ success: true, rowsAffected });
+        } catch (error) {
+            console.error('[Chat] markAllChatNotificationsRead error:', error);
+            res.status(500).json({ error: 'Failed to update chat notifications' });
+        }
+    }
+
+    // DELETE /node/api/chats/notifications  (bell "Clear all")
+    static async clearChatNotifications(req: AuthRequest, res: Response): Promise<void> {
+        try {
+            const userId = toInt(req.user!.id)!;
+            const rowsAffected = await ChatDbService.clearChatNotifications(userId);
+            res.json({ success: true, rowsAffected });
+        } catch (error) {
+            console.error('[Chat] clearChatNotifications error:', error);
+            res.status(500).json({ error: 'Failed to clear chat notifications' });
         }
     }
 
@@ -595,13 +674,26 @@ export class ChatController {
 
             // Unhide if previously soft-deleted
             await ChatDbService.unhideConversationForUser(convId, targetId);
-            await ChatDbService.addGroupHistory(convId, userId, 'member_added', `added ${targetId}`).catch(() => { });
+            const addedTargets = await ChatDbService.getUsersByIds([targetId]).catch(() => []);
+            const addedTargetName = addedTargets?.[0]?.full_name || null;
+            await ChatDbService.addGroupHistory(convId, userId, 'member_added', addedTargetName ? `added ${addedTargetName}` : `added a member`).catch(() => { });
 
             const members = await ChatDbService.getMembers(convId);
             res.json({ success: true, members });
 
-            // Broadcast member addition to all members via socket (after response to avoid blocking)
+            // Toolbar bell notification for the newly added member.
             const io = getIo(req);
+            const addActorInfo = await ChatDbService.getUsersByIds([userId]).catch(() => []);
+            await pushGroupNotification(
+                io,
+                convId,
+                await ChatDbService.getConversation(convId).catch(() => null),
+                userId,
+                addActorInfo?.[0]?.full_name || 'User',
+                [targetId]
+            );
+
+            // Broadcast member addition to all members via socket (after response to avoid blocking)
             if (io) {
                 try {
                     const addedUsers = await ChatDbService.getUsersByIds([targetId]);
@@ -654,7 +746,9 @@ export class ChatController {
             }
 
             await ChatDbService.updateMemberRole(convId, targetId, newRole);
-            await ChatDbService.addGroupHistory(convId, userId, 'role_changed', `made ${targetId} ${newRole}`).catch(() => { });
+            const roleTargets = await ChatDbService.getUsersByIds([targetId]).catch(() => []);
+            const roleTargetName = roleTargets?.[0]?.full_name || null;
+            await ChatDbService.addGroupHistory(convId, userId, 'role_changed', roleTargetName ? `made ${roleTargetName} ${newRole}` : `made a member ${newRole}`).catch(() => { });
             const members = await ChatDbService.getMembers(convId);
             res.json({ success: true, members });
         } catch (error) {
@@ -675,6 +769,7 @@ export class ChatController {
             if (targetId === userId) {
                 // leaving the conversation
                 await ChatDbService.removeMember(convId, userId);
+                await ChatDbService.addGroupHistory(convId, userId, 'member_removed', `left the group`).catch(() => { });
                 return void res.json({ success: true, left: true });
             }
 
@@ -689,7 +784,9 @@ export class ChatController {
                 return void res.status(403).json({ error: 'Only the owner can remove admins' });
             }
             await ChatDbService.removeMember(convId, targetId);
-            await ChatDbService.addGroupHistory(convId, userId, 'member_removed', `removed ${targetId}`).catch(() => { });
+            const removedTargets = await ChatDbService.getUsersByIds([targetId]).catch(() => []);
+            const removedTargetName = removedTargets?.[0]?.full_name || null;
+            await ChatDbService.addGroupHistory(convId, userId, 'member_removed', removedTargetName ? `removed ${removedTargetName}` : `removed a member`).catch(() => { });
             const members = await ChatDbService.getMembers(convId);
             res.json({ success: true, members });
         } catch (error) {
@@ -774,6 +871,7 @@ export class ChatController {
 
             // Non-owner leaving a group: remove member
             await ChatDbService.removeMember(convId, userId);
+            await ChatDbService.addGroupHistory(convId, userId, 'member_removed', `left the group`).catch(() => { });
             res.json({ success: true, left: true });
         } catch (error) {
             console.error('[Chat] leaveConversation error:', error);

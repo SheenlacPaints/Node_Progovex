@@ -274,7 +274,7 @@ export const getNotifications = async (req: AuthRequest, res: Response) => {
                 reference_type, 
                 content, 
                 is_read,
-                FORMAT(created_at, 'yyyy-MM-dd HH:mm:ss') as created_at
+                created_at
              FROM nt_notifications 
              WHERE cuserid = @userId
              ORDER BY created_at DESC
@@ -429,6 +429,17 @@ export const deleteNotification = async (req: AuthRequest, res: Response) => {
     await executeNonQuery(
         'DELETE FROM nt_notifications WHERE id = @notificationId AND cuserid = @userId',
         { notificationId, userId }
+    );
+
+    res.json({ success: true });
+};
+
+export const clearAllNotifications = async (req: AuthRequest, res: Response) => {
+    const userId = req.user!.id;
+
+    await executeNonQuery(
+        'DELETE FROM nt_notifications WHERE cuserid = @userId',
+        { userId }
     );
 
     res.json({ success: true });

@@ -103,6 +103,12 @@ router.get('/users', ChatController.searchUsers);
 router.post('/dm', ChatController.createDM);
 router.post('/group', ChatController.createGroup);
 
+// Chat notifications (must be declared before the /:id param routes)
+router.get('/notifications', ChatController.listChatNotifications);
+router.put('/notifications/read', ChatController.markChatNotificationsRead);
+router.put('/notifications/read-all', ChatController.markAllChatNotificationsRead);
+router.delete('/notifications', ChatController.clearChatNotifications);
+
 router.get('/:id', ChatController.getConversation);
 router.get('/:id/messages', ChatController.getMessages);
 router.post('/:id/messages', ChatController.sendMessage);

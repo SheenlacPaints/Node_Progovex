@@ -93,7 +93,22 @@ export class ChatDbService {
                      created_at DATETIME2 NOT NULL DEFAULT GETUTCDATE()
                  )`,
                 `IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_chat_group_history_conv' AND object_id = OBJECT_ID('nt_chat_group_history'))
-                 CREATE INDEX IX_chat_group_history_conv ON nt_chat_group_history (conversation_id)`
+                 CREATE INDEX IX_chat_group_history_conv ON nt_chat_group_history (conversation_id)`,
+                `IF NOT EXISTS (SELECT * FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME = 'nt_chat_notifications')
+                 CREATE TABLE nt_chat_notifications (
+                     id INT IDENTITY(1,1) PRIMARY KEY,
+                     user_id INT NOT NULL,
+                     conversation_id INT NOT NULL,
+                     message_id INT NULL,
+                     sender_id INT NOT NULL,
+                     content NVARCHAR(MAX) NULL,
+                     is_read BIT NOT NULL DEFAULT 0,
+                     created_at DATETIME2 NOT NULL DEFAULT GETUTCDATE()
+                 )`,
+                `IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_chat_notif_user' AND object_id = OBJECT_ID('nt_chat_notifications'))
+                 CREATE INDEX IX_chat_notif_user ON nt_chat_notifications (user_id, is_read)`,
+                `IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_chat_notif_conv' AND object_id = OBJECT_ID('nt_chat_notifications'))
+                 CREATE INDEX IX_chat_notif_conv ON nt_chat_notifications (conversation_id)`
             ];
             for (const sql of statements) {
                 try {
@@ -323,6 +338,9 @@ export class ChatDbService {
             `DELETE FROM nt_chat_conversation_members WHERE conversation_id = @convId AND user_id = @userId`,
             { convId: conversationId, userId }
         );
+        // Leaving / being removed from a conversation also clears that user's
+        // pending bell notifications so they don't linger as unread orphans.
+        await this.deleteChatNotificationsForUser(userId, conversationId).catch(() => { });
         await executeNonQuery(`UPDATE nt_chat_conversations SET updated_at = GETUTCDATE() WHERE id = @convId`, { convId: conversationId });
     }
 
@@ -348,6 +366,7 @@ export class ChatDbService {
     static async deleteConversation(id: number): Promise<void> {
         await executeNonQuery(`DELETE FROM nt_chat_message_reactions WHERE message_id IN (SELECT id FROM nt_chat_messages WHERE conversation_id = @id)`, { id });
         await executeNonQuery(`DELETE FROM nt_chat_messages WHERE conversation_id = @id`, { id });
+        await executeNonQuery(`DELETE FROM nt_chat_notifications WHERE conversation_id = @id`, { id });
         await executeNonQuery(`DELETE FROM nt_chat_conversation_members WHERE conversation_id = @id`, { id });
         await executeNonQuery(`DELETE FROM nt_chat_conversations WHERE id = @id`, { id });
     }
@@ -359,6 +378,9 @@ export class ChatDbService {
              WHERE conversation_id = @convId AND user_id = @userId`,
             { convId: conversationId, userId }
         );
+        // A hidden/deleted chat should no longer produce bell notifications for
+        // this user (a later incoming message re-surfaces it and creates fresh rows).
+        await this.deleteChatNotificationsForUser(userId, conversationId).catch(() => { });
 
         const conversation = await this.getConversation(conversationId);
         if (conversation?.conversation_type === 'dm') {
@@ -822,5 +844,111 @@ export class ChatDbService {
         }
 
         return Array.from(convMap.values()).slice(0, limit);
+    }
+
+    // ==================== NOTIFICATIONS ====================
+
+    /**
+     * Insert a chat notification row for a recipient (unread). Keeps chat
+     * notifications in their own table so they can be shown in the toolbar
+     * bell next to the common/community notification records, each with its
+     * own read/unread state.
+     */
+    static async createChatNotification(p: {
+        userId: number;
+        conversationId: number;
+        messageId?: number | null;
+        senderId: number;
+        content?: string | null;
+    }): Promise<number> {
+        const rows = await executeQuery<any>(
+            `INSERT INTO nt_chat_notifications
+                (user_id, conversation_id, message_id, sender_id, content, is_read, created_at)
+             OUTPUT INSERTED.id
+             VALUES (@userId, @conversationId, @messageId, @senderId, @content, 0, GETUTCDATE())`,
+            {
+                userId: p.userId,
+                conversationId: p.conversationId,
+                messageId: p.messageId ?? null,
+                senderId: p.senderId,
+                content: p.content || null
+            }
+        );
+        return toInt(rows?.[0]?.id) || 0;
+    }
+
+    /** Mark every chat notification for one conversation as read. */
+    static async markChatNotificationsRead(conversationId: number, userId: number): Promise<number> {
+        const res = await executeNonQuery(
+            `UPDATE nt_chat_notifications
+             SET is_read = 1
+             WHERE user_id = @userId AND conversation_id = @conversationId AND is_read = 0`,
+            { userId, conversationId }
+        );
+        return res.rowsAffected?.[0] || 0;
+    }
+
+    /** Mark every chat notification as read for a user. */
+    static async markAllChatNotificationsRead(userId: number): Promise<number> {
+        const res = await executeNonQuery(
+            `UPDATE nt_chat_notifications SET is_read = 1
+             WHERE user_id = @userId AND is_read = 0`,
+            { userId }
+        );
+        return res.rowsAffected?.[0] || 0;
+    }
+
+    /** Remove every chat notification row for a user (bell "Clear all"). */
+    static async clearChatNotifications(userId: number): Promise<number> {
+        const res = await executeNonQuery(
+            `DELETE FROM nt_chat_notifications WHERE user_id = @userId`,
+            { userId }
+        );
+        return res.rowsAffected?.[0] || 0;
+    }
+
+    /**
+     * List chat notifications for a user (most recent first) joined with the
+     * conversation and the sender so the toolbar can render a rich row.
+     * Also returns the total unread count for the bell badge.
+     */
+    static async getChatNotifications(userId: number, page = 1, limit = 30): Promise<{
+        notifications: any[];
+        unreadCount: number;
+    }> {
+        const offset = Math.max(0, (page - 1) * limit);
+        const notifications = await executeQuery<any>(
+            `SELECT n.id, n.conversation_id, n.message_id, n.sender_id, n.content, n.is_read,
+                    n.created_at as created_at,
+                    c.conversation_type, c.name as group_name, c.avatar_url as group_avatar,
+                    u.cuserid as sender_username,
+                    COALESCE(NULLIF(LTRIM(RTRIM(u.cuser_name)), ''),
+                             CONCAT(u.cfirst_name, ' ', u.clast_name), u.cfirst_name) as sender_name,
+                    u.cprofile_image_name as sender_avatar
+             FROM nt_chat_notifications n
+             JOIN nt_chat_conversations c ON c.id = n.conversation_id
+             LEFT JOIN users u ON u.ID = n.sender_id
+             WHERE n.user_id = @userId
+             ORDER BY n.id DESC
+             OFFSET @offset ROWS FETCH NEXT @limit ROWS ONLY`,
+            { userId, offset, limit }
+        );
+        const unreadResult = await executeQuery<any>(
+            `SELECT COUNT(*) as count FROM nt_chat_notifications
+             WHERE user_id = @userId AND is_read = 0`,
+            { userId }
+        );
+        return {
+            notifications: notifications || [],
+            unreadCount: unreadResult[0]?.count || 0
+        };
+    }
+
+    /** Remove chat notification rows (e.g. when a conversation is hidden/deleted). */
+    static async deleteChatNotificationsForUser(userId: number, conversationId: number): Promise<void> {
+        await executeNonQuery(
+            `DELETE FROM nt_chat_notifications WHERE user_id = @userId AND conversation_id = @conversationId`,
+            { userId, conversationId }
+        );
     }
 }

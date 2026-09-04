@@ -1,6 +1,7 @@
 import { Server, Socket } from 'socket.io';
 import jwt from 'jsonwebtoken';
 import { ChatDbService } from '../services/chatDb.service';
+import { pushChatNotifications } from '../services/chatNotification.service';
 import { resolveUserId } from '../services/chatIdentity.service';
 
 function toInt(val: any): number | undefined {
@@ -166,6 +167,10 @@ export function registerChatSocketHandlers(io: Server): void {
                     const mid = toInt(m.user_id);
                     if (mid && mid !== uId) io.to(`user_${mid}`).emit('chat:message', payload);
                 }
+
+                // Toolbar notifications for members who are not viewing this chat.
+                await pushChatNotifications(io, convId, payload, uId);
+
                 console.log(`[ChatSocket] message ${saved.id} in chat ${convId}`);
             } catch (err) {
                 console.error('[ChatSocket] send error:', err);
@@ -298,6 +303,8 @@ export function registerChatSocketHandlers(io: Server): void {
             if (!uId || !convId) return;
             try {
                 await ChatDbService.markRead(convId, uId);
+                // Reading the conversation clears its pending chat notifications.
+                await ChatDbService.markChatNotificationsRead(convId, uId).catch(() => { });
                 io.to(`chat_${convId}`).emit('chat:read-receipt', {
                     conversationId: convId,
                     userId: uId,
