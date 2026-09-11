@@ -27,9 +27,13 @@ function verifyUserId(token: string): string | null {
 
 export function setGmailUserCookie(res: Response, userId: string) {
   const signed = signUserId(userId);
+  const forwardedProto = (Array.isArray(res.req.headers['x-forwarded-proto'])
+    ? res.req.headers['x-forwarded-proto'][0]
+    : res.req.headers['x-forwarded-proto'] || '').split(',')[0].trim();
+  const isSecure = res.req.secure || forwardedProto === 'https';
   res.cookie(GMAIL_USER_COOKIE, signed, {
     httpOnly: true,
-    secure: process.env.NODE_ENV === 'production',
+    secure: isSecure,
     sameSite: 'lax',
     maxAge: 7 * 24 * 60 * 60 * 1000,
     path: '/',
