@@ -232,7 +232,13 @@ export function registerChatSocketHandlers(io: Server): void {
                 const msg = await ChatDbService.getMessageById(messageId);
                 if (!msg || msg.conversation_id !== convId || toInt(msg.sender_id) !== uId) return;
                 await ChatDbService.deleteMessage(messageId);
-                io.to(`chat_${convId}`).emit('chat:message-deleted', { conversationId: convId, messageId });
+                const payload = { conversationId: convId, messageId };
+                io.to(`chat_${convId}`).emit('chat:message-deleted', payload);
+                const members = await ChatDbService.getMembers(convId).catch(() => []);
+                for (const m of members) {
+                    const mid = toInt(m.user_id);
+                    if (mid) io.to(`user_${mid}`).emit('chat:message-deleted', payload);
+                }
             } catch (err) {
                 console.error('[ChatSocket] delete error:', err);
             }

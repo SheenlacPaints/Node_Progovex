@@ -280,15 +280,15 @@ export class ChatDbService {
                   JOIN users u ON u.ID = m.user_id
                   WHERE m.conversation_id = c.id AND m.user_id <> @userId AND c.conversation_type = 'dm') as other_user_id,
                  (SELECT COUNT(*) FROM nt_chat_conversation_members m WHERE m.conversation_id = c.id${dfu ? ' AND ISNULL(m.deleted_for_user, 0) = 0' : ''}) as member_count,
-                 (SELECT TOP 1 content FROM nt_chat_messages msg WHERE msg.conversation_id = c.id ORDER BY msg.created_at DESC) as last_message,
-                 (SELECT TOP 1 created_at FROM nt_chat_messages msg WHERE msg.conversation_id = c.id ORDER BY msg.created_at DESC) as last_message_time,
-                 (SELECT TOP 1 sender_id FROM nt_chat_messages msg WHERE msg.conversation_id = c.id ORDER BY msg.created_at DESC) as last_sender_id,
+                 (SELECT TOP 1 content FROM nt_chat_messages msg WHERE msg.conversation_id = c.id AND ISNULL(msg.is_deleted, 0) = 0 ORDER BY msg.created_at DESC) as last_message,
+                 (SELECT TOP 1 created_at FROM nt_chat_messages msg WHERE msg.conversation_id = c.id AND ISNULL(msg.is_deleted, 0) = 0 ORDER BY msg.created_at DESC) as last_message_time,
+                 (SELECT TOP 1 sender_id FROM nt_chat_messages msg WHERE msg.conversation_id = c.id AND ISNULL(msg.is_deleted, 0) = 0 ORDER BY msg.created_at DESC) as last_sender_id,
                  (SELECT COUNT(*) FROM nt_chat_messages msg
-                  WHERE msg.conversation_id = c.id AND msg.sender_id <> @userId
+                  WHERE msg.conversation_id = c.id AND msg.sender_id <> @userId AND ISNULL(msg.is_deleted, 0) = 0
                     AND (me.last_read_at IS NULL OR msg.created_at > me.last_read_at)) as unread_count
              FROM nt_chat_conversations c
              INNER JOIN nt_chat_conversation_members me ON me.conversation_id = c.id AND me.user_id = @userId${dfu ? ' AND ISNULL(me.deleted_for_user, 0) = 0' : ''}
-             ORDER BY ISNULL((SELECT TOP 1 created_at FROM nt_chat_messages msg WHERE msg.conversation_id = c.id ORDER BY msg.created_at DESC), c.created_at) DESC`,
+             ORDER BY ISNULL((SELECT TOP 1 created_at FROM nt_chat_messages msg WHERE msg.conversation_id = c.id AND ISNULL(msg.is_deleted, 0) = 0 ORDER BY msg.created_at DESC), c.created_at) DESC`,
             { userId }
         );
     }

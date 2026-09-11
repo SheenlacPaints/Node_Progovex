@@ -330,7 +330,10 @@ export class ChatController {
             }
             await ChatDbService.deleteMessage(messageId);
             const io = getIo(req);
-            if (io) io.to(`chat_${convId}`).emit('chat:message-deleted', { conversationId: convId, messageId });
+            if (io) {
+                io.to(`chat_${convId}`).emit('chat:message-deleted', { conversationId: convId, messageId });
+                await broadcastToUserRooms(io, convId, 'chat:message-deleted', { conversationId: convId, messageId });
+            }
             res.json({ success: true, messageId });
         } catch (error) {
             console.error('[Chat] deleteMessage error:', error);
@@ -624,8 +627,13 @@ export class ChatController {
                 message_type: original.message_type || 'text',
                 content: original.content || null,
                 attachment_url: original.attachment_url || null,
-                attachment_name: original.attachment_name || null
+                attachment_name: original.attachment_name || null,
+                attachment_size: original.attachment_size || null,
+                attachment_type: original.attachment_type || null
             });
+            // Forwarding into a conversation behaves like sending there: re-surface
+            // it for members who had soft-deleted (hidden) it.
+            await ChatDbService.unhideForNewMessage(targetId, userId).catch(() => { });
             const senders = await ChatDbService.getUsersByIds([userId]);
             const sender = senders && senders.length > 0 ? senders[0] : null;
             const payload = {
@@ -638,6 +646,8 @@ export class ChatController {
                 content: original.content || null,
                 attachment_url: original.attachment_url || null,
                 attachment_name: original.attachment_name || null,
+                attachment_size: original.attachment_size || null,
+                attachment_type: original.attachment_type || null,
                 forwarded_from: {
                     sender_name: (original.sender_name || '').trim() || null
                 },
@@ -648,7 +658,9 @@ export class ChatController {
             const io = getIo(req);
             if (io) {
                 io.to(`chat_${targetId}`).emit('chat:message', payload);
-                await broadcastToUserRooms(io, targetId, 'chat:message', payload, userId);
+                // Include the forwarder so their own conversation-list preview
+                // updates too (send/forward are not necessarily in chat_<targetId>).
+                await broadcastToUserRooms(io, targetId, 'chat:message', payload, undefined);
             }
             res.json({ success: true, message: payload });
         } catch (error) {
