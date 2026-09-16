@@ -7,6 +7,11 @@ function toInt(val: any): number | undefined {
 }
 
 let HAS_DELETED_FOR_USER = false;
+// Feature flags verified against the live schema at startup so a failed
+// migration degrades gracefully instead of breaking every chat query.
+let HAS_CLEARED_AT = false;
+let HAS_SYSTEM_MSG = false;
+let HAS_USER_PINS = false;
 
 export class ChatDbService {
 
@@ -108,7 +113,19 @@ export class ChatDbService {
                 `IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_chat_notif_user' AND object_id = OBJECT_ID('nt_chat_notifications'))
                  CREATE INDEX IX_chat_notif_user ON nt_chat_notifications (user_id, is_read)`,
                 `IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_chat_notif_conv' AND object_id = OBJECT_ID('nt_chat_notifications'))
-                 CREATE INDEX IX_chat_notif_conv ON nt_chat_notifications (conversation_id)`
+                 CREATE INDEX IX_chat_notif_conv ON nt_chat_notifications (conversation_id)`,
+                `IF COL_LENGTH('nt_chat_conversation_members', 'cleared_at') IS NULL
+                 ALTER TABLE nt_chat_conversation_members ADD cleared_at DATETIME2 NULL`,
+                `IF COL_LENGTH('nt_chat_messages', 'is_system') IS NULL
+                 ALTER TABLE nt_chat_messages ADD is_system BIT NOT NULL DEFAULT 0`,
+                `IF NOT EXISTS (SELECT * FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME = 'nt_chat_user_pins')
+                 CREATE TABLE nt_chat_user_pins (
+                     user_id INT NOT NULL,
+                     conversation_id INT NOT NULL,
+                     message_id INT NULL,
+                     updated_at DATETIME2 NOT NULL DEFAULT GETUTCDATE(),
+                     CONSTRAINT PK_chat_user_pins PRIMARY KEY (user_id, conversation_id)
+                 )`
             ];
             for (const sql of statements) {
                 try {
@@ -119,6 +136,27 @@ export class ChatDbService {
                 }
             }
             console.log('[ChatDb] tables ensured');
+
+            // Verify the optional chat columns/tables actually exist (the ALTERs
+            // above can fail on restricted accounts) before using them in SQL.
+            try {
+                const checks = await conn.request().query(`
+                    SELECT
+                        (SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS
+                          WHERE TABLE_NAME = 'nt_chat_conversation_members' AND COLUMN_NAME = 'cleared_at') as cleared_at,
+                        (SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS
+                          WHERE TABLE_NAME = 'nt_chat_messages' AND COLUMN_NAME = 'is_system') as is_system,
+                        (SELECT COUNT(*) FROM INFORMATION_SCHEMA.TABLES
+                          WHERE TABLE_NAME = 'nt_chat_user_pins') as user_pins
+                `);
+                const r = checks.recordset?.[0];
+                HAS_CLEARED_AT = !!r?.cleared_at;
+                HAS_SYSTEM_MSG = !!r?.is_system;
+                HAS_USER_PINS = !!r?.user_pins;
+                console.log(`[ChatDb] flags cleared_at=${HAS_CLEARED_AT} is_system=${HAS_SYSTEM_MSG} user_pins=${HAS_USER_PINS}`);
+            } catch (e: any) {
+                console.error('[ChatDb] schema flag check failed:', e?.message || e);
+            }
 
             // Dedicated migration: ensure deleted_for_user column exists
             try {
@@ -264,6 +302,8 @@ export class ChatDbService {
 
     static async getConversationsForUser(userId: number): Promise<any[]> {
         const dfu = HAS_DELETED_FOR_USER;
+        // Per-user "cleared" filter only applies when the column exists.
+        const clr = HAS_CLEARED_AT ? ' AND (me.cleared_at IS NULL OR msg.created_at > me.cleared_at)' : '';
         return executeQuery<any>(
             `SELECT
                  c.id as conversation_id,
@@ -280,12 +320,12 @@ export class ChatDbService {
                   JOIN users u ON u.ID = m.user_id
                   WHERE m.conversation_id = c.id AND m.user_id <> @userId AND c.conversation_type = 'dm') as other_user_id,
                  (SELECT COUNT(*) FROM nt_chat_conversation_members m WHERE m.conversation_id = c.id${dfu ? ' AND ISNULL(m.deleted_for_user, 0) = 0' : ''}) as member_count,
-                 (SELECT TOP 1 content FROM nt_chat_messages msg WHERE msg.conversation_id = c.id AND ISNULL(msg.is_deleted, 0) = 0 ORDER BY msg.created_at DESC) as last_message,
-                 (SELECT TOP 1 created_at FROM nt_chat_messages msg WHERE msg.conversation_id = c.id AND ISNULL(msg.is_deleted, 0) = 0 ORDER BY msg.created_at DESC) as last_message_time,
-                 (SELECT TOP 1 sender_id FROM nt_chat_messages msg WHERE msg.conversation_id = c.id AND ISNULL(msg.is_deleted, 0) = 0 ORDER BY msg.created_at DESC) as last_sender_id,
+                 (SELECT TOP 1 content FROM nt_chat_messages msg WHERE msg.conversation_id = c.id AND ISNULL(msg.is_deleted, 0) = 0${clr} ORDER BY msg.created_at DESC) as last_message,
+                 (SELECT TOP 1 created_at FROM nt_chat_messages msg WHERE msg.conversation_id = c.id AND ISNULL(msg.is_deleted, 0) = 0${clr} ORDER BY msg.created_at DESC) as last_message_time,
+                 (SELECT TOP 1 sender_id FROM nt_chat_messages msg WHERE msg.conversation_id = c.id AND ISNULL(msg.is_deleted, 0) = 0${clr} ORDER BY msg.created_at DESC) as last_sender_id,
                  (SELECT COUNT(*) FROM nt_chat_messages msg
                   WHERE msg.conversation_id = c.id AND msg.sender_id <> @userId AND ISNULL(msg.is_deleted, 0) = 0
-                    AND (me.last_read_at IS NULL OR msg.created_at > me.last_read_at)) as unread_count
+                    AND (me.last_read_at IS NULL OR msg.created_at > me.last_read_at)${clr}) as unread_count
              FROM nt_chat_conversations c
              INNER JOIN nt_chat_conversation_members me ON me.conversation_id = c.id AND me.user_id = @userId${dfu ? ' AND ISNULL(me.deleted_for_user, 0) = 0' : ''}
              ORDER BY ISNULL((SELECT TOP 1 created_at FROM nt_chat_messages msg WHERE msg.conversation_id = c.id AND ISNULL(msg.is_deleted, 0) = 0 ORDER BY msg.created_at DESC), c.created_at) DESC`,
@@ -364,6 +404,7 @@ export class ChatDbService {
     }
 
     static async deleteConversation(id: number): Promise<void> {
+        if (HAS_USER_PINS) await executeNonQuery(`DELETE FROM nt_chat_user_pins WHERE conversation_id = @id`, { id });
         await executeNonQuery(`DELETE FROM nt_chat_message_reactions WHERE message_id IN (SELECT id FROM nt_chat_messages WHERE conversation_id = @id)`, { id });
         await executeNonQuery(`DELETE FROM nt_chat_messages WHERE conversation_id = @id`, { id });
         await executeNonQuery(`DELETE FROM nt_chat_notifications WHERE conversation_id = @id`, { id });
@@ -378,6 +419,8 @@ export class ChatDbService {
              WHERE conversation_id = @convId AND user_id = @userId`,
             { convId: conversationId, userId }
         );
+        // Deleting the chat also drops that user's private (DM) pin.
+        await this.setUserPin(userId, conversationId, null).catch(() => { });
         // A hidden/deleted chat should no longer produce bell notifications for
         // this user (a later incoming message re-surfaces it and creates fresh rows).
         await this.deleteChatNotificationsForUser(userId, conversationId).catch(() => { });
@@ -428,10 +471,26 @@ export class ChatDbService {
     // ==================== MESSAGES ====================
 
     static async getMessages(conversationId: number, limit = 200, viewerId?: number): Promise<any[]> {
+        // "Clear chat" (and DM delete-chat) is per-user: everything sent before
+        // this viewer's cleared_at is excluded from their stream, while other
+        // members keep seeing the full history.
+        let clearedAt: Date | null = null;
+        if (viewerId && HAS_CLEARED_AT) {
+            const me = await executeQuery<any>(
+                `SELECT cleared_at FROM nt_chat_conversation_members
+                 WHERE conversation_id = @convId AND user_id = @userId`,
+                { convId: conversationId, userId: viewerId }
+            );
+            const raw = me?.[0]?.cleared_at;
+            if (raw) {
+                const d = new Date(raw);
+                if (!isNaN(d.getTime())) clearedAt = d;
+            }
+        }
         const rows = await executeQuery<any>(
             `SELECT TOP (@limit) msg.id, msg.conversation_id, msg.sender_id, msg.message_type, msg.content,
                     msg.attachment_url, msg.attachment_name, msg.reply_to_message_id, msg.created_at,
-                    msg.edited, msg.is_deleted, msg.attachment_size, msg.attachment_type,
+                    msg.edited, msg.is_deleted, msg.attachment_size, msg.attachment_type${HAS_SYSTEM_MSG ? ', msg.is_system' : ''},
                     COALESCE(NULLIF(LTRIM(RTRIM(u.cuser_name)), ''), CONCAT(u.cfirst_name, ' ', u.clast_name), u.cfirst_name) as sender_name,
                     u.cprofile_image_name as sender_avatar,
                     r.id as reply_id, r.sender_id as reply_sender_id, r.message_type as reply_message_type,
@@ -442,8 +501,9 @@ export class ChatDbService {
              LEFT JOIN nt_chat_messages r ON r.id = msg.reply_to_message_id
              LEFT JOIN users ru ON ru.ID = r.sender_id
              WHERE msg.conversation_id = @convId
+               AND (@clearedAt IS NULL OR msg.created_at > @clearedAt)
              ORDER BY msg.created_at DESC`,
-            { convId: conversationId, limit }
+            { convId: conversationId, limit, clearedAt }
         );
 
         const list = (rows || []).map(r => ({
@@ -525,11 +585,12 @@ export class ChatDbService {
         attachment_size?: number;
         attachment_type?: string;
         reply_to_message_id?: number | null;
+        is_system?: boolean;
     }): Promise<any> {
         const insertResult = await executeNonQuery(
-            `INSERT INTO nt_chat_messages (conversation_id, sender_id, message_type, content, attachment_url, attachment_name, reply_to_message_id, attachment_size, attachment_type)
+            `INSERT INTO nt_chat_messages (conversation_id, sender_id, message_type, content, attachment_url, attachment_name, reply_to_message_id, attachment_size, attachment_type${HAS_SYSTEM_MSG ? ', is_system' : ''})
              OUTPUT INSERTED.id, INSERTED.created_at
-             VALUES (@convId, @senderId, @type, @content, @attachmentUrl, @attachmentName, @replyTo, @attachmentSize, @attachmentType)`,
+             VALUES (@convId, @senderId, @type, @content, @attachmentUrl, @attachmentName, @replyTo, @attachmentSize, @attachmentType${HAS_SYSTEM_MSG ? ', @isSystem' : ''})`,
             {
                 convId: data.conversation_id,
                 senderId: data.sender_id,
@@ -539,7 +600,8 @@ export class ChatDbService {
                 attachmentName: data.attachment_name || null,
                 replyTo: data.reply_to_message_id || null,
                 attachmentSize: data.attachment_size || null,
-                attachmentType: data.attachment_type || null
+                attachmentType: data.attachment_type || null,
+                isSystem: data.is_system ? 1 : 0
             }
         );
         await executeNonQuery(`UPDATE nt_chat_conversations SET updated_at = GETUTCDATE() WHERE id = @convId`, { convId: data.conversation_id });
@@ -568,7 +630,68 @@ export class ChatDbService {
         );
     }
 
-    static async getPinnedMessage(conversationId: number): Promise<any | null> {
+    /** Per-user pin storage (used for DMs so a pin stays private to the pinner). */
+    static async setUserPin(userId: number, conversationId: number, messageId: number | null): Promise<void> {
+        if (!HAS_USER_PINS) return;
+        if (messageId) {
+            await executeNonQuery(
+                `UPDATE nt_chat_user_pins SET message_id = @messageId, updated_at = GETUTCDATE()
+                 WHERE user_id = @userId AND conversation_id = @convId;
+                 IF @@ROWCOUNT = 0
+                 INSERT INTO nt_chat_user_pins (user_id, conversation_id, message_id) VALUES (@userId, @convId, @messageId)`,
+                { userId, convId: conversationId, messageId }
+            );
+        } else {
+            await executeNonQuery(
+                `DELETE FROM nt_chat_user_pins WHERE user_id = @userId AND conversation_id = @convId`,
+                { userId, convId: conversationId }
+            );
+        }
+    }
+
+    static async getUserPin(userId: number, conversationId: number): Promise<any | null> {
+        if (!HAS_USER_PINS) return null;
+        const rows = await executeQuery<any>(
+            `SELECT msg.id, msg.conversation_id, msg.sender_id, msg.message_type, msg.content, msg.attachment_url, msg.attachment_name, msg.created_at,
+                    COALESCE(NULLIF(LTRIM(RTRIM(u.cuser_name)), ''), CONCAT(u.cfirst_name, ' ', u.clast_name), u.cfirst_name) as sender_name
+             FROM nt_chat_user_pins p
+             JOIN nt_chat_messages msg ON msg.id = p.message_id
+             JOIN users u ON u.ID = msg.sender_id
+             WHERE p.user_id = @userId AND p.conversation_id = @convId
+               AND ISNULL(msg.is_deleted, 0) = 0`,
+            { userId, convId: conversationId }
+        );
+        return rows && rows.length > 0 ? rows[0] : null;
+    }
+
+    /** True when pins in this conversation are private per user (DMs). */
+    static async hasPrivatePin(conversationId: number): Promise<boolean> {
+        if (!HAS_USER_PINS) return false;
+        const rows = await executeQuery<any>(
+            `SELECT conversation_type FROM nt_chat_conversations WHERE id = @convId`,
+            { convId: conversationId }
+        );
+        return !!rows && rows.length > 0 && rows[0].conversation_type === 'dm';
+    }
+
+    static async saveSystemMessage(conversationId: number, senderId: number, content: string): Promise<any> {
+        const insertResult = await executeNonQuery(
+            `INSERT INTO nt_chat_messages (conversation_id, sender_id, message_type, content${HAS_SYSTEM_MSG ? ', is_system' : ''})
+             OUTPUT INSERTED.id, INSERTED.created_at
+             VALUES (@convId, @senderId, 'system', @content${HAS_SYSTEM_MSG ? ', 1' : ''})`,
+            { convId: conversationId, senderId, content }
+        );
+        await executeNonQuery(`UPDATE nt_chat_conversations SET updated_at = GETUTCDATE() WHERE id = @convId`, { convId: conversationId });
+        const row = insertResult.recordset[0];
+        return { id: row.id, created_at: row.created_at };
+    }
+
+    static async getPinnedMessage(conversationId: number, viewerId?: number): Promise<any | null> {
+        // DM pins are private per user; groups keep the shared pinned message.
+        if (viewerId !== undefined) {
+            const isPrivate = await this.hasPrivatePin(conversationId);
+            if (isPrivate) return await this.getUserPin(viewerId, conversationId);
+        }
         const rows = await executeQuery<any>(
             `SELECT msg.id, msg.conversation_id, msg.sender_id, msg.message_type, msg.content, msg.attachment_url, msg.attachment_name, msg.created_at,
                     COALESCE(NULLIF(LTRIM(RTRIM(u.cuser_name)), ''), CONCAT(u.cfirst_name, ' ', u.clast_name), u.cfirst_name) as sender_name
@@ -581,6 +704,23 @@ export class ChatDbService {
         return rows && rows.length > 0 ? rows[0] : null;
     }
 
+    /** "Clear chat" for one user: everything before now disappears only for them. */
+    static async clearChatForUser(conversationId: number, userId: number): Promise<void> {
+        if (!HAS_CLEARED_AT) {
+            // Schema without per-user clearing: fall back to legacy whole-chat clear.
+            await this.clearChat(conversationId);
+            return;
+        }
+        await executeNonQuery(
+            `UPDATE nt_chat_conversation_members SET cleared_at = GETUTCDATE()
+             WHERE conversation_id = @convId AND user_id = @userId`,
+            { convId: conversationId, userId }
+        );
+        // A per-user clear also drops their private pin (nothing left to point at).
+        await this.setUserPin(userId, conversationId, null);
+    }
+
+    /** Legacy whole-conversation clear (kept for the REST fallback contract). */
     static async clearChat(conversationId: number): Promise<void> {
         await executeNonQuery(
             `DELETE FROM nt_chat_message_reactions WHERE message_id IN (SELECT id FROM nt_chat_messages WHERE conversation_id = @id)`,
@@ -607,6 +747,21 @@ export class ChatDbService {
              WHERE msg.conversation_id = @convId AND msg.is_deleted = 0 AND msg.content LIKE @term
              ORDER BY msg.created_at DESC`,
             { convId: conversationId, term: `%${q}%`, limit }
+        );
+        return rows || [];
+    }
+
+    static async getSystemMessagesForConversation(conversationId: number, afterDate?: Date): Promise<any[]> {
+        if (!HAS_SYSTEM_MSG) return [];
+        const rows = await executeQuery<any>(
+            `SELECT msg.id, msg.conversation_id, msg.sender_id, msg.message_type, msg.content, msg.attachment_url, msg.attachment_name, msg.created_at,
+                    COALESCE(NULLIF(LTRIM(RTRIM(u.cuser_name)), ''), CONCAT(u.cfirst_name, ' ', u.clast_name), u.cfirst_name) as sender_name
+             FROM nt_chat_messages msg
+             JOIN users u ON u.ID = msg.sender_id
+             WHERE msg.conversation_id = @convId AND msg.is_system = 1 AND ISNULL(msg.is_deleted, 0) = 0
+               AND (@afterDate IS NULL OR msg.created_at > @afterDate)
+             ORDER BY msg.created_at ASC`,
+            { convId: conversationId, afterDate: afterDate || null }
         );
         return rows || [];
     }

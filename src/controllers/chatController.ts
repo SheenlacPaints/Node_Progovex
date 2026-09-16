@@ -342,6 +342,8 @@ export class ChatController {
     }
 
     // POST /node/api/chats/:id/pin { messageId }  (messageId=null unpins)
+    // DM pins are PRIVATE (only the pinner sees them); group pins are shared
+    // with every member. Same messageId means pin/unpin accordingly.
     static async pinMessage(req: AuthRequest, res: Response): Promise<void> {
         try {
             const userId = toInt(req.user!.id)!;
@@ -354,10 +356,23 @@ export class ChatController {
             if (messageId && !(await ChatDbService.isMessageInConversation(messageId, convId))) {
                 return void res.status(404).json({ error: 'Message not found' });
             }
-            await ChatDbService.pinMessage(convId, messageId);
-            const pinned = await ChatDbService.getPinnedMessage(convId);
+            const privatePin = await ChatDbService.hasPrivatePin(convId);
+            if (privatePin) {
+                await ChatDbService.setUserPin(userId, convId, messageId);
+            } else {
+                await ChatDbService.pinMessage(convId, messageId);
+            }
+            const pinned = privatePin
+                ? await ChatDbService.getUserPin(userId, convId)
+                : await ChatDbService.getPinnedMessage(convId);
             const io = getIo(req);
-            if (io) io.to(`chat_${convId}`).emit('chat:pinned', { conversationId: convId, messageId, pinned });
+            if (io) {
+                if (privatePin) {
+                    io.to(`user_${userId}`).emit('chat:pinned', { conversationId: convId, messageId, pinned });
+                } else {
+                    io.to(`chat_${convId}`).emit('chat:pinned', { conversationId: convId, messageId, pinned });
+                }
+            }
             res.json({ success: true, pinned });
         } catch (error) {
             console.error('[Chat] pinMessage error:', error);
@@ -368,9 +383,10 @@ export class ChatController {
     // GET /node/api/chats/:id/pin
     static async getPinnedMessage(req: AuthRequest, res: Response): Promise<void> {
         try {
+            const userId = toInt(req.user!.id)!;
             const convId = toInt(req.params.id);
             if (!convId) return void res.status(400).json({ error: 'Invalid request' });
-            const pinned = await ChatDbService.getPinnedMessage(convId);
+            const pinned = await ChatDbService.getPinnedMessage(convId, userId);
             res.json({ success: true, pinned });
         } catch (error) {
             console.error('[Chat] getPinnedMessage error:', error);
@@ -379,6 +395,8 @@ export class ChatController {
     }
 
     // DELETE /node/api/chats/:id/clear
+    // "Clear chat" only wipes the history for the CALLER (WhatsApp "Clear
+    // messages for me") - other members keep the full conversation.
     static async clearChat(req: AuthRequest, res: Response): Promise<void> {
         try {
             const userId = toInt(req.user!.id)!;
@@ -387,9 +405,9 @@ export class ChatController {
             if (!(await ChatDbService.isMember(convId, userId))) {
                 return void res.status(403).json({ error: 'You are not a member of this conversation' });
             }
-            await ChatDbService.clearChat(convId);
+            await ChatDbService.clearChatForUser(convId, userId);
             const io = getIo(req);
-            if (io) io.to(`chat_${convId}`).emit('chat:cleared', { conversationId: convId });
+            if (io) io.to(`user_${userId}`).emit('chat:cleared', { conversationId: convId });
             res.json({ success: true, conversationId: convId });
         } catch (error) {
             console.error('[Chat] clearChat error:', error);
@@ -782,6 +800,7 @@ export class ChatController {
                 // leaving the conversation
                 await ChatDbService.removeMember(convId, userId);
                 await ChatDbService.addGroupHistory(convId, userId, 'member_removed', `left the group`).catch(() => { });
+                await ChatController.broadcastLeftSystemMessage(convId, userId, getIo(req), 'left').catch(() => { });
                 return void res.json({ success: true, left: true });
             }
 
@@ -799,11 +818,62 @@ export class ChatController {
             const removedTargets = await ChatDbService.getUsersByIds([targetId]).catch(() => []);
             const removedTargetName = removedTargets?.[0]?.full_name || null;
             await ChatDbService.addGroupHistory(convId, userId, 'member_removed', removedTargetName ? `removed ${removedTargetName}` : `removed a member`).catch(() => { });
+            await ChatController.broadcastLeftSystemMessage(convId, targetId, getIo(req), 'removed', userId).catch(() => { });
             const members = await ChatDbService.getMembers(convId);
             res.json({ success: true, members });
         } catch (error) {
             console.error('[Chat] removeMember error:', error);
             res.status(500).json({ error: 'Failed to remove member' });
+        }
+    }
+
+    /**
+     * Persist a system message in the group stream when a member leaves or is
+     * removed, and broadcast it like a normal message so every member sees
+     * "<Name> left" with the time inside the chat (WhatsApp behaviour).
+     */
+    static async broadcastLeftSystemMessage(convId: number, userId: number, io: Server | undefined, action: 'left' | 'removed', actorId?: number): Promise<void> {
+        if (!io) return;
+        try {
+            const users = await ChatDbService.getUsersByIds([userId]).catch(() => []);
+            const name = users?.[0]?.full_name || 'Someone';
+            let text: string;
+            if (action === 'left') {
+                text = `${name} left the group`;
+            } else if (actorId) {
+                const actors = await ChatDbService.getUsersByIds([actorId]).catch(() => []);
+                const actorName = actors?.[0]?.full_name || 'an admin';
+                text = `${name} was removed by ${actorName}`;
+            } else {
+                text = `${name} was removed`;
+            }
+            const saved = await ChatDbService.saveSystemMessage(convId, userId, text);
+            const payload = {
+                id: saved.id,
+                conversation_id: convId,
+                sender_id: userId,
+                sender_name: name,
+                sender_avatar: null as string | null,
+                message_type: 'system',
+                is_system: true,
+                content: text,
+                attachment_url: null,
+                attachment_name: null,
+                attachment_size: null,
+                attachment_type: null,
+                reply_to: null,
+                reactions: [] as any[],
+                is_read: false,
+                created_at: saved.created_at
+            };
+            io.to(`chat_${convId}`).emit('chat:message', payload);
+            const members = await ChatDbService.getMembers(convId).catch(() => []);
+            for (const m of members) {
+                const mid = toInt(m.user_id);
+                if (mid) io.to(`user_${mid}`).emit('chat:message', payload);
+            }
+        } catch (e) {
+            console.error('[Chat] system message error:', e);
         }
     }
 
@@ -881,9 +951,10 @@ export class ChatController {
                 return void res.json({ success: true, hidden: true, hardDeleted: result.hardDeleted });
             }
 
-            // Non-owner leaving a group: remove member
+            // Non-owner leaving a group: remove member + show "X left" in the stream
             await ChatDbService.removeMember(convId, userId);
             await ChatDbService.addGroupHistory(convId, userId, 'member_removed', `left the group`).catch(() => { });
+            await ChatController.broadcastLeftSystemMessage(convId, userId, getIo(req), 'left').catch(() => { });
             res.json({ success: true, left: true });
         } catch (error) {
             console.error('[Chat] leaveConversation error:', error);
@@ -920,7 +991,14 @@ export class ChatController {
                 return void res.json({ success: true, deleted: true });
             }
 
-            // Everyone else: soft-delete for current user only
+            // Everyone else: soft-delete for current user only. For DMs this is
+            // WhatsApp-style "delete chat": the conversation disappears AND the
+            // previous history is cleared for this user only (the other person
+            // keeps everything). It re-appears with an empty thread when a new
+            // message arrives.
+            if (conversation.conversation_type === 'dm') {
+                await ChatDbService.clearChatForUser(convId, userId);
+            }
             const result = await ChatDbService.hideConversationForUser(convId, userId);
             res.json({ success: true, hidden: true, hardDeleted: result.hardDeleted });
         } catch (error) {

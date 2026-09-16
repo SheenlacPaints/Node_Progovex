@@ -245,6 +245,8 @@ export function registerChatSocketHandlers(io: Server): void {
         });
 
         // PIN / UNPIN A MESSAGE
+        // DM pins are PRIVATE (stored per user); group pins are shared by all
+        // members, so only the room receives those.
         socket.on('chat:pin', async (data: { conversationId: number; messageId: number | null }) => {
             const uId = await getUserIdFromSocket(socket);
             const convId = toInt(data?.conversationId);
@@ -253,23 +255,36 @@ export function registerChatSocketHandlers(io: Server): void {
             try {
                 if (!(await ChatDbService.isMember(convId, uId))) return;
                 if (messageId && !(await ChatDbService.isMessageInConversation(messageId, convId))) return;
-                await ChatDbService.pinMessage(convId, messageId);
-                const pinned = await ChatDbService.getPinnedMessage(convId);
-                io.to(`chat_${convId}`).emit('chat:pinned', { conversationId: convId, messageId, pinned });
+                const privatePin = await ChatDbService.hasPrivatePin(convId);
+                if (privatePin) {
+                    await ChatDbService.setUserPin(uId, convId, messageId);
+                } else {
+                    await ChatDbService.pinMessage(convId, messageId);
+                }
+                const pinned = privatePin
+                    ? await ChatDbService.getUserPin(uId, convId)
+                    : await ChatDbService.getPinnedMessage(convId);
+                const payload = { conversationId: convId, messageId, pinned };
+                if (privatePin) {
+                    io.to(`user_${uId}`).emit('chat:pinned', payload);
+                } else {
+                    io.to(`chat_${convId}`).emit('chat:pinned', payload);
+                }
             } catch (err) {
                 console.error('[ChatSocket] pin error:', err);
             }
         });
 
-        // CLEAR CHAT
+        // CLEAR CHAT — per user (WhatsApp "clear for me"): other members keep
+        // the conversation, only the caller's view is emptied from now on.
         socket.on('chat:clear', async (data: { conversationId: number }) => {
             const uId = await getUserIdFromSocket(socket);
             const convId = toInt(data?.conversationId);
             if (!uId || !convId) return;
             try {
                 if (!(await ChatDbService.isMember(convId, uId))) return;
-                await ChatDbService.clearChat(convId);
-                io.to(`chat_${convId}`).emit('chat:cleared', { conversationId: convId });
+                await ChatDbService.clearChatForUser(convId, uId);
+                io.to(`user_${uId}`).emit('chat:cleared', { conversationId: convId });
             } catch (err) {
                 console.error('[ChatSocket] clear error:', err);
             }
