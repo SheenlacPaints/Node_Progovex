@@ -12,6 +12,8 @@ let HAS_DELETED_FOR_USER = false;
 let HAS_CLEARED_AT = false;
 let HAS_SYSTEM_MSG = false;
 let HAS_USER_PINS = false;
+let HAS_LEFT_AT = false;
+let HAS_PERIODS = false;
 
 export class ChatDbService {
 
@@ -116,6 +118,24 @@ export class ChatDbService {
                  CREATE INDEX IX_chat_notif_conv ON nt_chat_notifications (conversation_id)`,
                 `IF COL_LENGTH('nt_chat_conversation_members', 'cleared_at') IS NULL
                  ALTER TABLE nt_chat_conversation_members ADD cleared_at DATETIME2 NULL`,
+                // left_at keeps a former member's row after leave/remove so they
+                // still see their old chats; NULL means currently in the group.
+                `IF COL_LENGTH('nt_chat_conversation_members', 'left_at') IS NULL
+                 ALTER TABLE nt_chat_conversation_members ADD left_at DATETIME2 NULL`,
+                // Membership periods: one row per join→leave stretch. The visible
+                // message set is the UNION of a member's periods, so re-joining
+                // restores the pre-leave conversation while messages sent while
+                // away stay hidden (WhatsApp behaviour).
+                `IF NOT EXISTS (SELECT * FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME = 'nt_chat_member_periods')
+                 CREATE TABLE nt_chat_member_periods (
+                     id INT IDENTITY(1,1) PRIMARY KEY,
+                     conversation_id INT NOT NULL,
+                     user_id INT NOT NULL,
+                     joined_at DATETIME2 NOT NULL DEFAULT GETUTCDATE(),
+                     left_at DATETIME2 NULL
+                 )`,
+                `IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name = 'IX_chat_periods_member' AND object_id = OBJECT_ID('nt_chat_member_periods'))
+                 CREATE INDEX IX_chat_periods_member ON nt_chat_member_periods (user_id, conversation_id)`,
                 `IF COL_LENGTH('nt_chat_messages', 'is_system') IS NULL
                  ALTER TABLE nt_chat_messages ADD is_system BIT NOT NULL DEFAULT 0`,
                 `IF NOT EXISTS (SELECT * FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME = 'nt_chat_user_pins')
@@ -145,6 +165,10 @@ export class ChatDbService {
                         (SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS
                           WHERE TABLE_NAME = 'nt_chat_conversation_members' AND COLUMN_NAME = 'cleared_at') as cleared_at,
                         (SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS
+                          WHERE TABLE_NAME = 'nt_chat_conversation_members' AND COLUMN_NAME = 'left_at') as left_at,
+                        (SELECT COUNT(*) FROM INFORMATION_SCHEMA.TABLES
+                          WHERE TABLE_NAME = 'nt_chat_member_periods') as periods,
+                        (SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS
                           WHERE TABLE_NAME = 'nt_chat_messages' AND COLUMN_NAME = 'is_system') as is_system,
                         (SELECT COUNT(*) FROM INFORMATION_SCHEMA.TABLES
                           WHERE TABLE_NAME = 'nt_chat_user_pins') as user_pins
@@ -153,7 +177,9 @@ export class ChatDbService {
                 HAS_CLEARED_AT = !!r?.cleared_at;
                 HAS_SYSTEM_MSG = !!r?.is_system;
                 HAS_USER_PINS = !!r?.user_pins;
-                console.log(`[ChatDb] flags cleared_at=${HAS_CLEARED_AT} is_system=${HAS_SYSTEM_MSG} user_pins=${HAS_USER_PINS}`);
+                HAS_LEFT_AT = !!r?.left_at;
+                HAS_PERIODS = !!r?.periods;
+                console.log(`[ChatDb] flags cleared_at=${HAS_CLEARED_AT} is_system=${HAS_SYSTEM_MSG} user_pins=${HAS_USER_PINS} left_at=${HAS_LEFT_AT} periods=${HAS_PERIODS}`);
             } catch (e: any) {
                 console.error('[ChatDb] schema flag check failed:', e?.message || e);
             }
@@ -304,6 +330,15 @@ export class ChatDbService {
         const dfu = HAS_DELETED_FOR_USER;
         // Per-user "cleared" filter only applies when the column exists.
         const clr = HAS_CLEARED_AT ? ' AND (me.cleared_at IS NULL OR msg.created_at > me.cleared_at)' : '';
+        // Visibility window: only messages a member actually witnessed count for
+        // the preview/unread. With periods, the union of the member's periods
+        // is matched in SQL (JSON-free, index-friendly per-period ranges).
+        const win = (HAS_LEFT_AT && HAS_PERIODS)
+            ? ` AND EXISTS (SELECT 1 FROM nt_chat_member_periods p
+                           WHERE p.conversation_id = c.id AND p.user_id = me.user_id
+                             AND msg.created_at >= p.joined_at
+                             AND (p.left_at IS NULL OR msg.created_at <= p.left_at))`
+            : (HAS_LEFT_AT ? ` AND msg.created_at > ISNULL(me.joined_at, '1970-01-01') AND (me.left_at IS NULL OR msg.created_at <= me.left_at)` : '');
         return executeQuery<any>(
             `SELECT
                  c.id as conversation_id,
@@ -316,16 +351,17 @@ export class ChatDbService {
                  c.updated_at,
                  me.role as my_role,
                  me.last_read_at,
+                 me.left_at,
                  (SELECT TOP 1 u.ID FROM nt_chat_conversation_members m
                   JOIN users u ON u.ID = m.user_id
-                  WHERE m.conversation_id = c.id AND m.user_id <> @userId AND c.conversation_type = 'dm') as other_user_id,
-                 (SELECT COUNT(*) FROM nt_chat_conversation_members m WHERE m.conversation_id = c.id${dfu ? ' AND ISNULL(m.deleted_for_user, 0) = 0' : ''}) as member_count,
-                 (SELECT TOP 1 content FROM nt_chat_messages msg WHERE msg.conversation_id = c.id AND ISNULL(msg.is_deleted, 0) = 0${clr} ORDER BY msg.created_at DESC) as last_message,
-                 (SELECT TOP 1 created_at FROM nt_chat_messages msg WHERE msg.conversation_id = c.id AND ISNULL(msg.is_deleted, 0) = 0${clr} ORDER BY msg.created_at DESC) as last_message_time,
-                 (SELECT TOP 1 sender_id FROM nt_chat_messages msg WHERE msg.conversation_id = c.id AND ISNULL(msg.is_deleted, 0) = 0${clr} ORDER BY msg.created_at DESC) as last_sender_id,
+                  WHERE m.conversation_id = c.id AND m.user_id <> @userId AND c.conversation_type = 'dm'${HAS_LEFT_AT ? ' AND m.left_at IS NULL' : ''}) as other_user_id,
+                 (SELECT COUNT(*) FROM nt_chat_conversation_members m WHERE m.conversation_id = c.id${dfu ? ' AND ISNULL(m.deleted_for_user, 0) = 0' : ''}${HAS_LEFT_AT ? ' AND m.left_at IS NULL' : ''}) as member_count,
+                 (SELECT TOP 1 content FROM nt_chat_messages msg WHERE msg.conversation_id = c.id AND ISNULL(msg.is_deleted, 0) = 0${clr}${win} ORDER BY msg.created_at DESC) as last_message,
+                 (SELECT TOP 1 created_at FROM nt_chat_messages msg WHERE msg.conversation_id = c.id AND ISNULL(msg.is_deleted, 0) = 0${clr}${win} ORDER BY msg.created_at DESC) as last_message_time,
+                 (SELECT TOP 1 sender_id FROM nt_chat_messages msg WHERE msg.conversation_id = c.id AND ISNULL(msg.is_deleted, 0) = 0${clr}${win} ORDER BY msg.created_at DESC) as last_sender_id,
                  (SELECT COUNT(*) FROM nt_chat_messages msg
                   WHERE msg.conversation_id = c.id AND msg.sender_id <> @userId AND ISNULL(msg.is_deleted, 0) = 0
-                    AND (me.last_read_at IS NULL OR msg.created_at > me.last_read_at)${clr}) as unread_count
+                    AND (me.last_read_at IS NULL OR msg.created_at > me.last_read_at)${clr}${win}) as unread_count
              FROM nt_chat_conversations c
              INNER JOIN nt_chat_conversation_members me ON me.conversation_id = c.id AND me.user_id = @userId${dfu ? ' AND ISNULL(me.deleted_for_user, 0) = 0' : ''}
              ORDER BY ISNULL((SELECT TOP 1 created_at FROM nt_chat_messages msg WHERE msg.conversation_id = c.id AND ISNULL(msg.is_deleted, 0) = 0 ORDER BY msg.created_at DESC), c.created_at) DESC`,
@@ -339,19 +375,77 @@ export class ChatDbService {
                     u.cuserid as username,
                     COALESCE(NULLIF(LTRIM(RTRIM(u.cuser_name)), ''), CONCAT(u.cfirst_name, ' ', u.clast_name), u.cfirst_name) as full_name,
                     u.cprofile_image_name as avatar_url, u.cemail as email,
-                    ISNULL(st.is_online, 0) as is_online, st.last_seen_at
+                    ISNULL(st.is_online, 0) as is_online, st.last_seen_at${HAS_LEFT_AT ? ', m.left_at' : ''}
              FROM nt_chat_conversation_members m
              JOIN users u ON u.ID = m.user_id
              LEFT JOIN nt_chat_user_status st ON st.user_id = u.ID
              WHERE m.conversation_id = @convId
-             ORDER BY CASE m.role WHEN 'owner' THEN 0 WHEN 'admin' THEN 1 ELSE 2 END, u.cuser_name`,
+             ORDER BY CASE WHEN m.left_at IS NOT NULL THEN 1 ELSE 0 END, CASE m.role WHEN 'owner' THEN 0 WHEN 'admin' THEN 1 ELSE 2 END, u.cuser_name`,
             { convId: conversationId }
+        );
+    }
+
+    /**
+     * Visibility set of `userId` in `conversationId` (WhatsApp-style):
+     * the UNION of all membership periods. Re-joining restores the
+     * pre-leave conversation (earlier periods stay in the union), while
+     * messages sent between two periods (while away) stay hidden.
+     *
+     * Fallbacks:
+     * - no periods table → single window joined_at→left_at from the member row;
+     * - periods table but the member has no period rows (created before the
+     *   feature shipped) → window derived from the member row too, so legacy
+     *   members keep seeing everything they always saw.
+     */
+    static async getMemberVisibility(conversationId: number, userId: number): Promise<Array<{ joinedAt: Date; leftAt: Date | null }>> {
+        if (!HAS_LEFT_AT) return [];
+        const toTs = (v: any): Date | null => {
+            if (v === null || v === undefined) return null;
+            const d = new Date(v);
+            return isNaN(d.getTime()) ? null : d;
+        };
+        if (HAS_PERIODS) {
+            const periods = await executeQuery<any>(
+                `SELECT joined_at, left_at FROM nt_chat_member_periods
+                 WHERE conversation_id = @convId AND user_id = @userId
+                 ORDER BY joined_at ASC`,
+                { convId: conversationId, userId }
+            );
+            if (periods && periods.length > 0) {
+                return periods
+                    .map((p: any) => {
+                        const joined = toTs(p.joined_at);
+                        if (!joined) return null;
+                        return { joinedAt: joined, leftAt: toTs(p.left_at) };
+                    })
+                    .filter(Boolean) as Array<{ joinedAt: Date; leftAt: Date | null }>;
+            }
+        }
+        // Legacy window from the member row.
+        const rows = await executeQuery<any>(
+            `SELECT joined_at, left_at FROM nt_chat_conversation_members
+             WHERE conversation_id = @convId AND user_id = @userId`,
+            { convId: conversationId, userId }
+        );
+        if (!rows || rows.length === 0) return [];
+        const joined = toTs(rows[0].joined_at);
+        return joined ? [{ joinedAt: joined, leftAt: toTs(rows[0].left_at) }] : [];
+    }
+
+    /** True when the user was in the group at message time (any period covers t). */
+    static wasVisibleAt(
+        periods: Array<{ joinedAt: Date; leftAt: Date | null }>,
+        messageTime: Date
+    ): boolean {
+        return periods.some(p =>
+            messageTime.getTime() >= p.joinedAt.getTime() &&
+            (p.leftAt === null || messageTime.getTime() <= p.leftAt.getTime())
         );
     }
 
     static async getMemberRole(conversationId: number, userId: number): Promise<string | null> {
         const rows = await executeQuery<any>(
-            `SELECT role FROM nt_chat_conversation_members WHERE conversation_id = @convId AND user_id = @userId`,
+            `SELECT role FROM nt_chat_conversation_members WHERE conversation_id = @convId AND user_id = @userId${HAS_LEFT_AT ? ' AND left_at IS NULL' : ''}`,
             { convId: conversationId, userId }
         );
         return rows && rows.length > 0 ? rows[0].role : null;
@@ -362,22 +456,136 @@ export class ChatDbService {
         return role !== null;
     }
 
-    static async addMember(conversationId: number, userId: number, role = 'member'): Promise<void> {
-        await executeNonQuery(
-            `IF NOT EXISTS (SELECT 1 FROM nt_chat_conversation_members WHERE conversation_id = @convId AND user_id = @userId)
-             INSERT INTO nt_chat_conversation_members (conversation_id, user_id, role) VALUES (@convId, @userId, @role)
-             ELSE
-             UPDATE nt_chat_conversation_members SET role = @role WHERE conversation_id = @convId AND user_id = @userId`,
-            { convId: conversationId, userId, role }
+    /**
+     * True when the user has a membership record at all — including a former
+     * member whose row was kept (left_at stamped) after leaving/being removed.
+     * Used for read-only access so ex-members can still open and read their old
+     * chats, while write paths keep using isMember (active members only).
+     */
+    static async hasMembershipRecord(conversationId: number, userId: number): Promise<boolean> {
+        const rows = await executeQuery<any>(
+            `SELECT 1 FROM nt_chat_conversation_members
+             WHERE conversation_id = @convId AND user_id = @userId`,
+            { convId: conversationId, userId }
         );
+        return !!rows && rows.length > 0;
+    }
+
+    static async addMember(conversationId: number, userId: number, role = 'member'): Promise<void> {
+        if (HAS_LEFT_AT) {
+            // Period work happens BEFORE the member row is re-activated, while
+            // its left_at stamp is still readable.
+            if (HAS_PERIODS) {
+                const existing = await executeQuery<any>(
+                    `SELECT left_at FROM nt_chat_conversation_members
+                     WHERE conversation_id = @convId AND user_id = @userId`,
+                    { convId: conversationId, userId }
+                );
+                const isRejoin = !!existing?.length && existing[0].left_at != null;
+                // Re-joining does NOT reset the original joined history — the
+                // pre-leave conversation stays visible; only the away-gap stays
+                // hidden. A current member simply re-added must not get their
+                // open period closed (that would open a hidden gap).
+                if (isRejoin) {
+                    await executeNonQuery(
+                        `UPDATE nt_chat_member_periods SET left_at = DATEADD(second, -1, GETUTCDATE())
+                         WHERE conversation_id = @convId AND user_id = @userId AND left_at IS NULL`,
+                        { convId: conversationId, userId }
+                    );
+                    // Legacy seed: a member who left before the periods table
+                    // existed has a stamped member row but no period rows —
+                    // synthesise their historical period so re-joining restores
+                    // the pre-leave history they saw.
+                    await executeNonQuery(
+                        `IF NOT EXISTS (SELECT 1 FROM nt_chat_member_periods
+                                        WHERE conversation_id = @convId AND user_id = @userId)
+                         BEGIN
+                             INSERT INTO nt_chat_member_periods (conversation_id, user_id, joined_at, left_at)
+                             SELECT conversation_id, user_id, joined_at, left_at
+                             FROM nt_chat_conversation_members
+                             WHERE conversation_id = @convId AND user_id = @userId
+                         END`,
+                        { convId: conversationId, userId }
+                    );
+                }
+                if (isRejoin || !existing?.length) {
+                    await executeNonQuery(
+                        `INSERT INTO nt_chat_member_periods (conversation_id, user_id, joined_at)
+                         VALUES (@convId, @userId, GETUTCDATE())`,
+                        { convId: conversationId, userId }
+                    );
+                }
+            }
+            await executeNonQuery(
+                `IF EXISTS (SELECT 1 FROM nt_chat_conversation_members WHERE conversation_id = @convId AND user_id = @userId)
+                 BEGIN
+                     UPDATE nt_chat_conversation_members SET left_at = NULL, role = @role
+                     WHERE conversation_id = @convId AND user_id = @userId
+                 END
+                 ELSE
+                 BEGIN
+                     INSERT INTO nt_chat_conversation_members (conversation_id, user_id, role)
+                     VALUES (@convId, @userId, @role)
+                 END`,
+                { convId: conversationId, userId, role }
+            );
+        } else {
+            await executeNonQuery(
+                `IF NOT EXISTS (SELECT 1 FROM nt_chat_conversation_members WHERE conversation_id = @convId AND user_id = @userId)
+                 INSERT INTO nt_chat_conversation_members (conversation_id, user_id, role) VALUES (@convId, @userId, @role)
+                 ELSE
+                 UPDATE nt_chat_conversation_members SET role = @role WHERE conversation_id = @convId AND user_id = @userId`,
+                { convId: conversationId, userId, role }
+            );
+        }
         await executeNonQuery(`UPDATE nt_chat_conversations SET updated_at = GETUTCDATE() WHERE id = @convId`, { convId: conversationId });
     }
 
+    /**
+     * Leaving / being removed keeps the member row (WhatsApp behaviour): it is
+     * only stamped with left_at so the ex-member still sees their old chats in
+     * the list and the message history they witnessed, but can no longer send,
+     * react, or receive new messages. Rejoining clears the stamp and starts a
+     * fresh visibility window.
+     */
     static async removeMember(conversationId: number, userId: number): Promise<void> {
-        await executeNonQuery(
-            `DELETE FROM nt_chat_conversation_members WHERE conversation_id = @convId AND user_id = @userId`,
-            { convId: conversationId, userId }
-        );
+        if (HAS_LEFT_AT) {
+            // Small grace (3s) so the just-saved "X left the group" system
+            // message (created right after this call) still falls inside the
+            // leaver's own visibility window.
+            await executeNonQuery(
+                `UPDATE nt_chat_conversation_members SET left_at = DATEADD(second, 3, GETUTCDATE())
+                 WHERE conversation_id = @convId AND user_id = @userId`,
+                { convId: conversationId, userId }
+            );
+            if (HAS_PERIODS) {
+                // Legacy seed: a member whose row predates the periods table
+                // (stamped left_at, no period rows) gets their historical
+                // window inserted as a closed period so it stays visible.
+                await executeNonQuery(
+                    `IF NOT EXISTS (SELECT 1 FROM nt_chat_member_periods
+                                    WHERE conversation_id = @convId AND user_id = @userId)
+                     BEGIN
+                         INSERT INTO nt_chat_member_periods (conversation_id, user_id, joined_at, left_at)
+                         SELECT conversation_id, user_id, joined_at, left_at
+                         FROM nt_chat_conversation_members
+                         WHERE conversation_id = @convId AND user_id = @userId
+                     END`,
+                    { convId: conversationId, userId }
+                );
+                // Close the open period with the same grace as left_at.
+                await executeNonQuery(
+                    `UPDATE nt_chat_member_periods SET left_at = DATEADD(second, 4, GETUTCDATE())
+                     WHERE conversation_id = @convId AND user_id = @userId AND left_at IS NULL`,
+                    { convId: conversationId, userId }
+                );
+            }
+        } else {
+            await executeNonQuery(
+                `DELETE FROM nt_chat_conversation_members WHERE conversation_id = @convId AND user_id = @userId`,
+                { convId: conversationId, userId }
+            );
+        }
         // Leaving / being removed from a conversation also clears that user's
         // pending bell notifications so they don't linger as unread orphans.
         await this.deleteChatNotificationsForUser(userId, conversationId).catch(() => { });
@@ -487,6 +695,13 @@ export class ChatDbService {
                 if (!isNaN(d.getTime())) clearedAt = d;
             }
         }
+        // WhatsApp-style visibility: the UNION of the viewer's membership
+        // periods. A new joiner sees nothing before their join; a leaver keeps
+        // everything they witnessed; a re-joiner gets the pre-leave history
+        // back but not the messages sent while they were away.
+        const periods = (viewerId && HAS_LEFT_AT)
+            ? await this.getMemberVisibility(conversationId, viewerId)
+            : [];
         const rows = await executeQuery<any>(
             `SELECT TOP (@limit) msg.id, msg.conversation_id, msg.sender_id, msg.message_type, msg.content,
                     msg.attachment_url, msg.attachment_name, msg.reply_to_message_id, msg.created_at,
@@ -506,11 +721,17 @@ export class ChatDbService {
             { convId: conversationId, limit, clearedAt }
         );
 
-        const list = (rows || []).map(r => ({
-            ...r,
-            sender_name: (r.sender_name || '').trim() || null,
-            sender_avatar: r.sender_avatar || null
-        }));
+        const list = (rows || [])
+            .filter(r => {
+                if (!periods.length) return true; // no windowing (legacy schema / no viewer)
+                const t = new Date(r.created_at);
+                return !isNaN(t.getTime()) && this.wasVisibleAt(periods, t);
+            })
+            .map(r => ({
+                ...r,
+                sender_name: (r.sender_name || '').trim() || null,
+                sender_avatar: r.sender_avatar || null
+            }));
         const ids = list.filter(r => r.id).map(r => r.id);
         const reactions = ids.length ? await this.getReactionsForMessages(ids, viewerId) : {};
 
@@ -736,9 +957,13 @@ export class ChatDbService {
         );
     }
 
-    static async searchMessagesInConversation(conversationId: number, query: string, limit = 100): Promise<any[]> {
+    static async searchMessagesInConversation(conversationId: number, query: string, limit = 100, viewerId?: number): Promise<any[]> {
         const q = query ? query.trim() : '';
         if (!q) return [];
+        // Respect the viewer's visibility (union of membership periods).
+        const periods = (viewerId && HAS_LEFT_AT)
+            ? await this.getMemberVisibility(conversationId, viewerId)
+            : [];
         const rows = await executeQuery<any>(
             `SELECT TOP (@limit) msg.id, msg.conversation_id, msg.sender_id, msg.message_type, msg.content, msg.attachment_url, msg.attachment_name, msg.created_at,
                     COALESCE(NULLIF(LTRIM(RTRIM(u.cuser_name)), ''), CONCAT(u.cfirst_name, ' ', u.clast_name), u.cfirst_name) as sender_name
@@ -748,7 +973,12 @@ export class ChatDbService {
              ORDER BY msg.created_at DESC`,
             { convId: conversationId, term: `%${q}%`, limit }
         );
-        return rows || [];
+        // Keep only messages the viewer was in the group for.
+        return (rows || []).filter(r => {
+            if (!periods.length) return true;
+            const t = new Date(r.created_at);
+            return !isNaN(t.getTime()) && this.wasVisibleAt(periods, t);
+        });
     }
 
     static async getSystemMessagesForConversation(conversationId: number, afterDate?: Date): Promise<any[]> {
@@ -933,15 +1163,23 @@ export class ChatDbService {
             { userId, term: `%${q}%` }
         );
 
-        // Search message content
+        // Search message content — restricted to the union of the user's
+        // membership periods, so former members don't surface history they
+        // never witnessed and re-joiners don't surface the away-gap.
+        const winFilter = (HAS_LEFT_AT && HAS_PERIODS)
+            ? ` AND EXISTS (SELECT 1 FROM nt_chat_member_periods p
+                           WHERE p.conversation_id = msg.conversation_id AND p.user_id = me.user_id
+                             AND msg.created_at >= p.joined_at
+                             AND (p.left_at IS NULL OR msg.created_at <= p.left_at))`
+            : (HAS_LEFT_AT ? ` AND msg.created_at > ISNULL(me.joined_at, '1970-01-01') AND (me.left_at IS NULL OR msg.created_at <= me.left_at)` : '');
         const msgMatches = await executeQuery<any>(
             `SELECT TOP (@limit) msg.conversation_id,
                     msg.id as message_id, msg.content as match_snippet, msg.sender_id, msg.created_at as message_time,
                     COALESCE(NULLIF(LTRIM(RTRIM(su.cuser_name)), ''), CONCAT(su.cfirst_name, ' ', su.clast_name), su.cfirst_name) as sender_name
              FROM nt_chat_messages msg
-             INNER JOIN nt_chat_conversation_members me ON me.conversation_id = msg.conversation_id AND me.user_id = @userId${dfuFilter.replace('me.', 'me.')}
+             INNER JOIN nt_chat_conversation_members me ON me.conversation_id = msg.conversation_id AND me.user_id = @userId${dfuFilter}
              INNER JOIN users su ON su.ID = msg.sender_id
-             WHERE msg.content LIKE @term
+             WHERE msg.content LIKE @term${winFilter}
              ORDER BY msg.created_at DESC`,
             { userId, term: `%${q}%`, limit }
         );

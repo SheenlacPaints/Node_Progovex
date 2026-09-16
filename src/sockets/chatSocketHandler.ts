@@ -165,7 +165,8 @@ export function registerChatSocketHandlers(io: Server): void {
                 const members = await ChatDbService.getMembers(convId).catch(() => []);
                 for (const m of members) {
                     const mid = toInt(m.user_id);
-                    if (mid && mid !== uId) io.to(`user_${mid}`).emit('chat:message', payload);
+                    // Former members (left_at stamped) no longer receive messages.
+                    if (mid && mid !== uId && !(m as any).left_at) io.to(`user_${mid}`).emit('chat:message', payload);
                 }
 
                 // Toolbar notifications for members who are not viewing this chat.
@@ -313,7 +314,7 @@ export function registerChatSocketHandlers(io: Server): void {
             const members = await ChatDbService.getMembers(convId).catch(() => []);
             for (const m of members) {
                 const mid = toInt(m.user_id);
-                if (mid && mid !== uId) io.to(`user_${mid}`).emit('chat:typing', payload);
+                if (mid && mid !== uId && !(m as any).left_at) io.to(`user_${mid}`).emit('chat:typing', payload);
             }
         });
 

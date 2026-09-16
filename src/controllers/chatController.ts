@@ -250,7 +250,8 @@ export class ChatController {
 
             const conversation = await ChatDbService.getConversation(convId);
             if (!conversation) return void res.status(404).json({ error: 'Conversation not found' });
-            if (!(await ChatDbService.isMember(convId, userId))) {
+            // Former members (left/removed) keep read access to their old chats.
+            if (!(await ChatDbService.hasMembershipRecord(convId, userId))) {
                 return void res.status(403).json({ error: 'You are not a member of this conversation' });
             }
 
@@ -269,7 +270,7 @@ export class ChatController {
             const userId = toInt(req.user!.id)!;
             const convId = toInt(req.params.id);
             if (!convId) return void res.status(400).json({ error: 'Invalid conversation id' });
-            if (!(await ChatDbService.isMember(convId, userId))) {
+            if (!(await ChatDbService.hasMembershipRecord(convId, userId))) {
                 return void res.status(403).json({ error: 'You are not a member of this conversation' });
             }
             const messages = await ChatDbService.getMessages(convId, 200, userId);
@@ -402,7 +403,8 @@ export class ChatController {
             const userId = toInt(req.user!.id)!;
             const convId = toInt(req.params.id);
             if (!convId) return void res.status(400).json({ error: 'Invalid request' });
-            if (!(await ChatDbService.isMember(convId, userId))) {
+            // Former members may still clear their leftover chat ("delete for me").
+            if (!(await ChatDbService.hasMembershipRecord(convId, userId))) {
                 return void res.status(403).json({ error: 'You are not a member of this conversation' });
             }
             await ChatDbService.clearChatForUser(convId, userId);
@@ -418,11 +420,14 @@ export class ChatController {
     // GET /node/api/chats/:id/search?q=...
     static async searchMessages(req: AuthRequest, res: Response): Promise<void> {
         try {
+            const userId = toInt(req.user!.id)!;
             const convId = toInt(req.params.id);
             const q = (req.query.q as string) || '';
             if (!convId) return void res.status(400).json({ error: 'Invalid request' });
-            const messages = await ChatDbService.searchMessagesInConversation(convId, q);
-            res.json({ success: true, messages });
+            if (!(await ChatDbService.hasMembershipRecord(convId, userId))) {
+                return void res.status(403).json({ error: 'You are not a member of this conversation' });
+            }
+            const messages = await ChatDbService.searchMessagesInConversation(convId, q, 100, userId);
         } catch (error) {
             console.error('[Chat] searchMessages error:', error);
             res.status(500).json({ error: 'Failed to search messages' });
@@ -973,7 +978,11 @@ export class ChatController {
             if (!conversation) return void res.status(404).json({ error: 'Conversation not found' });
 
             const myRole = await ChatDbService.getMemberRole(convId, userId);
-            if (!myRole) return void res.status(403).json({ error: 'You are not a member' });
+            // getMemberRole excludes former members — they may still hide/delete
+            // their leftover chat, just not delete it for everyone.
+            if (!myRole && !(await ChatDbService.hasMembershipRecord(convId, userId))) {
+                return void res.status(403).json({ error: 'You are not a member' });
+            }
 
             // Owner of a group = hard delete for everyone
             if (myRole === 'owner' && conversation.conversation_type === 'group') {
