@@ -5,6 +5,7 @@ import fs from 'fs';
 import { AuthRequest } from '../middleware/auth';
 import { ChatDbService } from '../services/chatDb.service';
 import { pushChatNotifications, pushGroupNotification } from '../services/chatNotification.service';
+import { evictUserFromChatRooms } from '../sockets/chatSocketHandler';
 
 function toInt(val: any): number | undefined {
     if (val === undefined || val === null) return undefined;
@@ -21,7 +22,8 @@ async function broadcastToUserRooms(io: Server, convId: number, event: string, p
         const members = await ChatDbService.getMembers(convId);
         for (const m of members) {
             const mid = toInt(m.user_id);
-            if (mid && mid !== excludeUserId) io.to(`user_${mid}`).emit(event, payload);
+            // Former members (left_at stamped) no longer receive messages.
+            if (mid && mid !== excludeUserId && !(m as any).left_at) io.to(`user_${mid}`).emit(event, payload);
         }
     } catch (e) {
         console.error('[Chat] broadcast error:', e);
@@ -806,6 +808,13 @@ export class ChatController {
                 await ChatDbService.removeMember(convId, userId);
                 await ChatDbService.addGroupHistory(convId, userId, 'member_removed', `left the group`).catch(() => { });
                 await ChatController.broadcastLeftSystemMessage(convId, userId, getIo(req), 'left').catch(() => { });
+                // Drop the leaver's sockets from the conversation room so they stop
+                // receiving live messages immediately (not just after a refresh).
+                await evictUserFromChatRooms(getIo(req), userId);
+                // Tell the leaver's other open clients right away (their UI still
+                // shows a working composer until it learns about the leave).
+                const io = getIo(req);
+                if (io) io.to(`user_${userId}`).emit('chat:member-removed', { conversationId: convId, userId });
                 return void res.json({ success: true, left: true });
             }
 
@@ -820,10 +829,21 @@ export class ChatController {
                 return void res.status(403).json({ error: 'Only the owner can remove admins' });
             }
             await ChatDbService.removeMember(convId, targetId);
+            // Kick the removed user's sockets out of the conversation room FIRST so
+            // they stop receiving live messages immediately (not just after refresh).
+            await evictUserFromChatRooms(getIo(req), targetId);
             const removedTargets = await ChatDbService.getUsersByIds([targetId]).catch(() => []);
             const removedTargetName = removedTargets?.[0]?.full_name || null;
             await ChatDbService.addGroupHistory(convId, userId, 'member_removed', removedTargetName ? `removed ${removedTargetName}` : `removed a member`).catch(() => { });
             await ChatController.broadcastLeftSystemMessage(convId, targetId, getIo(req), 'removed', userId).catch(() => { });
+            // Tell the removed user (and remaining members) immediately so the
+            // removed client swaps its composer for a "no longer in group" banner
+            // without waiting for a refresh.
+            const io = getIo(req);
+            if (io) {
+                io.to(`user_${targetId}`).emit('chat:member-removed', { conversationId: convId, userId: targetId });
+                io.to(`chat_${convId}`).emit('chat:member-removed', { conversationId: convId, userId: targetId });
+            }
             const members = await ChatDbService.getMembers(convId);
             res.json({ success: true, members });
         } catch (error) {
@@ -875,7 +895,8 @@ export class ChatController {
             const members = await ChatDbService.getMembers(convId).catch(() => []);
             for (const m of members) {
                 const mid = toInt(m.user_id);
-                if (mid) io.to(`user_${mid}`).emit('chat:message', payload);
+                // Former members (left_at stamped) no longer receive messages.
+                if (mid && !(m as any).left_at) io.to(`user_${mid}`).emit('chat:message', payload);
             }
         } catch (e) {
             console.error('[Chat] system message error:', e);
@@ -945,6 +966,8 @@ export class ChatController {
                         if (mid && mid !== userId) {
                             io.to(`user_${mid}`).emit('chat:deleted', { conversationId: convId });
                         }
+                        // Group is gone: drop everyone's sockets from its room.
+                        if (mid) await evictUserFromChatRooms(io, mid);
                     }
                 }
                 return void res.json({ success: true, deleted: true });
@@ -960,6 +983,11 @@ export class ChatController {
             await ChatDbService.removeMember(convId, userId);
             await ChatDbService.addGroupHistory(convId, userId, 'member_removed', `left the group`).catch(() => { });
             await ChatController.broadcastLeftSystemMessage(convId, userId, getIo(req), 'left').catch(() => { });
+            // Drop the leaver's sockets from the conversation room so they stop
+            // receiving live messages immediately (not just after a refresh).
+            await evictUserFromChatRooms(getIo(req), userId);
+            const ioLeave = getIo(req);
+            if (ioLeave) ioLeave.to(`user_${userId}`).emit('chat:member-removed', { conversationId: convId, userId });
             res.json({ success: true, left: true });
         } catch (error) {
             console.error('[Chat] leaveConversation error:', error);
@@ -995,6 +1023,8 @@ export class ChatController {
                         if (mid && mid !== userId) {
                             io.to(`user_${mid}`).emit('chat:deleted', { conversationId: convId });
                         }
+                        // Group is gone: drop everyone's sockets from its room.
+                        if (mid) await evictUserFromChatRooms(io, mid);
                     }
                 }
                 return void res.json({ success: true, deleted: true });

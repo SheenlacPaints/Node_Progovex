@@ -27,6 +27,36 @@ async function getUserIdFromSocket(socket: Socket): Promise<number | undefined> 
 // test client, etc.) doesn't mark a still-connected user as offline.
 const userConnections = new Map<number, number>();
 
+/**
+ * Evict every open socket of a user from all `chat_<id>` conversation rooms.
+ *
+ * Socket.IO rooms are sticky: when someone leaves or is removed from a group,
+ * their sockets otherwise stay in `chat_<id>` and keep receiving live message
+ * broadcasts until the next reconnect/refresh. Call this right after the
+ * membership row is stamped with left_at so the removal takes effect
+ * immediately.
+ */
+export async function evictUserFromChatRooms(io: Server | undefined, userId: number): Promise<void> {
+    if (!io) return;
+    try {
+        // Real Socket instances (main namespace) — fetchSockets() returns remote
+        // proxies whose leave() does nothing, so resolve ids then look them up.
+        const ids = await io.in(`user_${userId}`).allSockets();
+        for (const id of ids) {
+            const s = io.sockets?.sockets?.get(id);
+            if (!s) continue;
+            for (const room of s.rooms) {
+                if (typeof room === 'string' && room.startsWith('chat_')) {
+                    s.leave(room);
+                }
+            }
+        }
+        console.log(`[ChatSocket] evicted user ${userId} from chat rooms`);
+    } catch (err) {
+        console.error('[ChatSocket] evict error:', err);
+    }
+}
+
 export function registerChatSocketHandlers(io: Server): void {
 
     io.on('connection', async (socket: Socket) => {
