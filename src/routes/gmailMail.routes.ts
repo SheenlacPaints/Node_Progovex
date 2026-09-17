@@ -52,6 +52,10 @@ router.get('/messages', async (req: GmailAuthenticatedRequest, res: Response) =>
     }
 
     const threadMap = new Map<string, any>();
+    // Messages arrive newest-first from Gmail. A thread row must reflect the
+    // LATEST message's state: previously any read message in the thread made
+    // the whole row read, which inflated the read count and desynced from
+    // Gmail's unread badge (issue 1).
     for (const msg of messages) {
       const tid = msg.threadId || msg.id;
       const existing = threadMap.get(tid);
@@ -67,15 +71,9 @@ router.get('/messages', async (req: GmailAuthenticatedRequest, res: Response) =>
         if (msg.from?.email && !existing.participantEmails.includes(msg.from.email)) {
           existing.participantEmails.push(msg.from.email);
         }
-        if (!existing.isRead && msg.isRead) {
-          existing.isRead = msg.isRead;
-        }
-        if (msg.isStarred) {
-          existing.isStarred = true;
-        }
-        if (msg.hasAttachments) {
-          existing.hasAttachments = true;
-        }
+        // older message: only fill fields the newest row lacks
+        if (!existing.snippet && msg.snippet) existing.snippet = msg.snippet;
+        if (msg.hasAttachments) existing.hasAttachments = true;
       }
     }
 
@@ -112,10 +110,49 @@ router.get('/messages/:messageId/attachments/:attachmentId', async (req: GmailAu
     const buffer = Buffer.from(data.data, 'base64url');
     const mimeType = data.mimeType || 'application/octet-stream';
     const filename = (req.query.filename as string) || 'attachment';
+    // ?mode=inline streams for in-browser preview; default keeps downloading.
+    const inline = (req.query.mode as string) === 'inline';
+    const safeName = filename.replace(/["\\\r\n]/g, '_');
     res.setHeader('Content-Type', mimeType);
-    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+    res.setHeader('Content-Disposition', `${inline ? 'inline' : 'attachment'}; filename="${safeName}"`);
     res.setHeader('Content-Length', buffer.length);
     res.send(buffer);
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+router.get('/contacts', async (req: GmailAuthenticatedRequest, res: Response) => {
+  try {
+    const contacts = await gmailService.getContacts(req.tokens!, (req.query.q as string) || '');
+    res.json({ contacts });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+router.get('/folder-counts', async (req: GmailAuthenticatedRequest, res: Response) => {
+  try {
+    const result = await gmailService.getFolderCounts(req.tokens!);
+    res.json(result);
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+router.get('/drafts', async (req: GmailAuthenticatedRequest, res: Response) => {
+  try {
+    const drafts = await gmailService.getDrafts(req.tokens!);
+    res.json({ drafts });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+router.post('/drafts/:id/send', async (req: GmailAuthenticatedRequest, res: Response) => {
+  try {
+    const result = await gmailService.sendDraft(req.tokens!, req.params.id);
+    res.json(result);
   } catch (error: any) {
     res.status(500).json({ error: error.message });
   }

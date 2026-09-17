@@ -9,6 +9,20 @@ export interface MessageListParams {
   q?: string;
 }
 
+// Gmail filters like is:unread / is:starred / label:work arrive as `q`.
+// Gmail's messages.list applies `q` only when it is the sole filter with
+// labelIds undefined, so split them apart here.
+function splitQueryFilters(q?: string): { labelIds?: string[]; query?: string } {
+  if (!q) return { query: undefined };
+  const labelMatches = [...q.matchAll(/(?:^|\s)(?:label|in):([\w./-]+)/gi)];
+  const labelIds = labelMatches.map(m => m[1].toUpperCase());
+  const rest = q
+    .replace(/(?:^|\s)(?:label|in):([\w./-]+)/gi, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return { labelIds: labelIds.length ? labelIds : undefined, query: rest || undefined };
+}
+
 export interface SendEmailParams {
   to: string[];
   cc?: string[];
@@ -79,17 +93,41 @@ export class GmailService {
 
   async listMessages(tokens: OAuthTokens, params: MessageListParams) {
     const gmail = this.getGmailClient(tokens);
-    const response = await gmail.users.messages.list({
-      userId: 'me',
-      labelIds: params.label ? [params.label] : undefined,
-      pageToken: params.pageToken || undefined,
-      maxResults: params.maxResults || 50,
-      q: params.q || undefined,
-    });
+    const { labelIds: filterLabelIds, query } = splitQueryFilters(params.q);
+    const labelIds = params.label ? [params.label] : filterLabelIds;
+    // Keep listing pages until we have enough THREADS (maxResults), because
+    // Gmail counts messages while the UI shows one row per thread. Threads
+    // are detected by threadId, so a page of 50 messages may only be ~20
+    // rows — exactly the "pagination shows few mails" bug.
+    const wanted = params.maxResults || 50;
+    const seenThreadIds = new Set<string>();
+    const collected: any[] = [];
+    let pageToken: string | undefined = params.pageToken || undefined;
+    let resultSizeEstimate = 0;
+    let guard = 0;
+    do {
+      const response = await gmail.users.messages.list({
+        userId: 'me',
+        labelIds,
+        pageToken,
+        maxResults: wanted,
+        q: query || undefined,
+      });
+      const messages = response.data.messages || [];
+      resultSizeEstimate = response.data.resultSizeEstimate || resultSizeEstimate;
+      for (const m of messages) {
+        const tid = m.threadId || m.id;
+        if (seenThreadIds.has(tid)) continue;
+        seenThreadIds.add(tid);
+        collected.push(m);
+      }
+      pageToken = response.data.nextPageToken || undefined;
+      guard++;
+    } while (pageToken && collected.length < wanted && guard < 5);
     return {
-      messages: response.data.messages || [],
-      nextPageToken: response.data.nextPageToken || null,
-      resultSizeEstimate: response.data.resultSizeEstimate || 0,
+      messages: collected,
+      nextPageToken: collected.length >= wanted ? pageToken || null : null,
+      resultSizeEstimate,
     };
   }
 
@@ -101,6 +139,93 @@ export class GmailService {
       format: 'full',
     });
     return this.normalizeMessage(response.data);
+  }
+
+  // Autocomplete source: harvest unique Name <email> pairs from recent
+  // From/To/Cc headers. Cheap (metadata only) and needs no extra Google API
+  // scope. filterEmails-like `term` matches name or address substring.
+  async getContacts(tokens: OAuthTokens, term: string = '') {
+    const gmail = this.getGmailClient(tokens);
+    const response = await gmail.users.messages.list({ userId: 'me', maxResults: 100 });
+    const ids = (response.data.messages || []).slice(0, 100).map((m: any) => m.id);
+    const people = new Map<string, { name: string; email: string }>();
+    const lowerTerm = (term || '').toLowerCase().trim();
+    const BATCH = 10;
+    for (let i = 0; i < ids.length; i += BATCH) {
+      const batch = ids.slice(i, i + BATCH);
+      const metas = await Promise.all(
+        batch.map((id: string) =>
+          gmail.users.messages
+            .get({
+              userId: 'me',
+              id,
+              format: 'metadata',
+              metadataHeaders: ['From', 'To', 'Cc'],
+            })
+            .then((r: any) => r.data)
+            .catch(() => null)
+        )
+      );
+      for (const meta of metas) {
+        if (!meta) continue;
+        const headers: any[] = meta.payload?.headers || [];
+        for (const h of headers) {
+          const value = h.value || '';
+          // Parse "Name <a@b.c>" as well as bare addresses
+          const re = /\s*"?([^"<]*?)"?\s*<([^<>\s]+)>\s*|\s*([^\s<>,;@"]+@[^\s<>,;;"]+)\s*/g;
+          let m: RegExpExecArray | null;
+          while ((m = re.exec(value)) !== null) {
+            const name = (m[1] || '').trim();
+            const email = (m[2] || m[3] || '').trim().toLowerCase();
+            if (!email || !email.includes('@')) continue;
+            const existing = people.get(email);
+            if (!existing) {
+              people.set(email, { name: name || email, email });
+            } else if (!existing.name && name) {
+              existing.name = name;
+            }
+          }
+        }
+      }
+    }
+    let list = Array.from(people.values());
+    if (lowerTerm) {
+      list = list.filter(
+        p => p.email.includes(lowerTerm) || (p.name || '').toLowerCase().includes(lowerTerm)
+      );
+    }
+    return list.slice(0, 10);
+  }
+
+  // Real per-folder counts for the sidebar. Gmail's list API returns
+  // resultSizeEstimate without needing to fetch the messages themselves.
+  async getFolderCounts(tokens: OAuthTokens) {
+    const gmail = this.getGmailClient(tokens);
+    const folders: Record<string, string> = {
+      inbox: 'INBOX',
+      sent: 'SENT',
+      drafts: 'DRAFT',
+      trash: 'TRASH',
+      spam: 'SPAM',
+    };
+    const counts: Record<string, number> = {};
+    const unread: Record<string, number> = {};
+    await Promise.all(
+      Object.entries(folders).map(async ([folder, label]) => {
+        try {
+          const total = await gmail.users.messages.list({ userId: 'me', labelIds: [label], maxResults: 1 });
+          counts[folder] = total.data.resultSizeEstimate || 0;
+          if (folder === 'inbox' || folder === 'spam') {
+            const unreadRes = await gmail.users.messages.list({ userId: 'me', labelIds: [label, 'UNREAD'], maxResults: 1 });
+            unread[folder] = unreadRes.data.resultSizeEstimate || 0;
+          }
+        } catch (e: any) {
+          console.error(`Count for ${folder} failed:`, e.message);
+          counts[folder] = 0;
+        }
+      })
+    );
+    return { counts, unread };
   }
 
   async getAttachment(tokens: OAuthTokens, messageId: string, attachmentId: string) {
@@ -119,7 +244,7 @@ export class GmailService {
       userId: 'me',
       id: messageId,
       format: 'metadata',
-      metadataHeaders: ['From', 'Subject', 'Date', 'To', 'Cc'],
+      metadataHeaders: ['From', 'Subject', 'Date', 'To', 'Cc', 'Bcc'],
     });
     return this.normalizeMessage(response.data);
   }
@@ -153,7 +278,11 @@ export class GmailService {
     const ccRaw = getHeader('Cc');
     const cc = ccRaw ? ccRaw.split(',').map((s: string) => s.trim()) : [];
 
+    const bccRaw = getHeader('Bcc');
+    const bcc = bccRaw ? bccRaw.split(',').map((s: string) => s.trim()) : [];
+
     const labelIds: string[] = msg.labelIds || [];
+    const isFromMe = labelIds.includes('SENT');
     const hasAttachments = labelIds.includes('HAS_ATTACHMENTS') || (msg.payload?.parts || []).length > 1;
 
     let body = msg.snippet || '';
@@ -194,6 +323,14 @@ export class GmailService {
       }
     }
 
+    // Prefer the message's own Date header; fall back to Gmail's internalDate
+    // (ms since epoch) so every row always carries a real, exact timestamp.
+    const dateHeader = getHeader('Date');
+    const internalMs = parseInt(msg.internalDate || '0');
+    const dateValue = dateHeader && !isNaN(new Date(dateHeader).getTime())
+      ? new Date(dateHeader).toISOString()
+      : (internalMs > 0 ? new Date(internalMs).toISOString() : null);
+
     return {
       id: msg.id,
       threadId: msg.threadId,
@@ -201,12 +338,16 @@ export class GmailService {
       from,
       to,
       cc,
+      bcc,
+      isFromMe,
+      toRecipients: isFromMe ? to : [],
       subject: this.decodeHtmlEntities(getHeader('Subject')),
       snippet: this.decodeHtmlEntities(msg.snippet || ''),
       body,
-      date: getHeader('Date') || new Date(parseInt(msg.internalDate || '0')).toISOString(),
+      date: dateValue,
       isRead: !labelIds.includes('UNREAD'),
       isStarred: labelIds.includes('STARRED'),
+      isDraft: labelIds.includes('DRAFT'),
       hasAttachments: attachments.length > 0 || labelIds.includes('HAS_ATTACHMENTS'),
       attachments,
       sizeEstimate: msg.sizeEstimate || 0,
@@ -219,6 +360,34 @@ export class GmailService {
     const thread = await this.getThread(tokens, threadId);
     if (!thread || !thread.messages) return [];
     return thread.messages.map((msg: any) => this.normalizeMessage(msg));
+  }
+
+  async getDrafts(tokens: OAuthTokens, maxResults: number = 50) {
+    const gmail = this.getGmailClient(tokens);
+    const response = await gmail.users.drafts.list({
+      userId: 'me',
+      maxResults,
+    });
+    const drafts = response.data.drafts || [];
+    const out: any[] = [];
+    for (const d of drafts) {
+      try {
+        const full = await gmail.users.drafts.get({ userId: 'me', id: d.id, format: 'full' });
+        out.push({ draftId: d.id, ...this.normalizeMessage(full.data.message) });
+      } catch (e: any) {
+        console.error(`Failed to fetch draft ${d.id}:`, e.message);
+      }
+    }
+    return out;
+  }
+
+  async sendDraft(tokens: OAuthTokens, draftId: string) {
+    const gmail = this.getGmailClient(tokens);
+    const response = await gmail.users.drafts.send({
+      userId: 'me',
+      requestBody: { id: draftId },
+    });
+    return response.data;
   }
 
   async getRawMessage(tokens: OAuthTokens, messageId: string) {
