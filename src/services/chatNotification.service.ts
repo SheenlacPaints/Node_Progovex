@@ -42,6 +42,8 @@ export async function pushChatNotifications(
         for (const m of members) {
             const userId = toInt(m.user_id);
             if (!userId || userId === toInt(senderId)) continue;
+            // Former members (left_at stamped) don't get notifications anymore.
+            if ((m as any).left_at) continue;
 
             // Skip members who are viewing the conversation in some open tab.
             if (io && roomSockets && roomSockets.size > 0) {

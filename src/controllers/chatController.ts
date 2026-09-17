@@ -5,6 +5,7 @@ import fs from 'fs';
 import { AuthRequest } from '../middleware/auth';
 import { ChatDbService } from '../services/chatDb.service';
 import { pushChatNotifications, pushGroupNotification } from '../services/chatNotification.service';
+import { evictUserFromChatRooms } from '../sockets/chatSocketHandler';
 
 function toInt(val: any): number | undefined {
     if (val === undefined || val === null) return undefined;
@@ -21,7 +22,8 @@ async function broadcastToUserRooms(io: Server, convId: number, event: string, p
         const members = await ChatDbService.getMembers(convId);
         for (const m of members) {
             const mid = toInt(m.user_id);
-            if (mid && mid !== excludeUserId) io.to(`user_${mid}`).emit(event, payload);
+            // Former members (left_at stamped) no longer receive messages.
+            if (mid && mid !== excludeUserId && !(m as any).left_at) io.to(`user_${mid}`).emit(event, payload);
         }
     } catch (e) {
         console.error('[Chat] broadcast error:', e);
@@ -250,7 +252,8 @@ export class ChatController {
 
             const conversation = await ChatDbService.getConversation(convId);
             if (!conversation) return void res.status(404).json({ error: 'Conversation not found' });
-            if (!(await ChatDbService.isMember(convId, userId))) {
+            // Former members (left/removed) keep read access to their old chats.
+            if (!(await ChatDbService.hasMembershipRecord(convId, userId))) {
                 return void res.status(403).json({ error: 'You are not a member of this conversation' });
             }
 
@@ -269,7 +272,7 @@ export class ChatController {
             const userId = toInt(req.user!.id)!;
             const convId = toInt(req.params.id);
             if (!convId) return void res.status(400).json({ error: 'Invalid conversation id' });
-            if (!(await ChatDbService.isMember(convId, userId))) {
+            if (!(await ChatDbService.hasMembershipRecord(convId, userId))) {
                 return void res.status(403).json({ error: 'You are not a member of this conversation' });
             }
             const messages = await ChatDbService.getMessages(convId, 200, userId);
@@ -330,7 +333,10 @@ export class ChatController {
             }
             await ChatDbService.deleteMessage(messageId);
             const io = getIo(req);
-            if (io) io.to(`chat_${convId}`).emit('chat:message-deleted', { conversationId: convId, messageId });
+            if (io) {
+                io.to(`chat_${convId}`).emit('chat:message-deleted', { conversationId: convId, messageId });
+                await broadcastToUserRooms(io, convId, 'chat:message-deleted', { conversationId: convId, messageId });
+            }
             res.json({ success: true, messageId });
         } catch (error) {
             console.error('[Chat] deleteMessage error:', error);
@@ -339,6 +345,8 @@ export class ChatController {
     }
 
     // POST /node/api/chats/:id/pin { messageId }  (messageId=null unpins)
+    // DM pins are PRIVATE (only the pinner sees them); group pins are shared
+    // with every member. Same messageId means pin/unpin accordingly.
     static async pinMessage(req: AuthRequest, res: Response): Promise<void> {
         try {
             const userId = toInt(req.user!.id)!;
@@ -351,10 +359,23 @@ export class ChatController {
             if (messageId && !(await ChatDbService.isMessageInConversation(messageId, convId))) {
                 return void res.status(404).json({ error: 'Message not found' });
             }
-            await ChatDbService.pinMessage(convId, messageId);
-            const pinned = await ChatDbService.getPinnedMessage(convId);
+            const privatePin = await ChatDbService.hasPrivatePin(convId);
+            if (privatePin) {
+                await ChatDbService.setUserPin(userId, convId, messageId);
+            } else {
+                await ChatDbService.pinMessage(convId, messageId);
+            }
+            const pinned = privatePin
+                ? await ChatDbService.getUserPin(userId, convId)
+                : await ChatDbService.getPinnedMessage(convId);
             const io = getIo(req);
-            if (io) io.to(`chat_${convId}`).emit('chat:pinned', { conversationId: convId, messageId, pinned });
+            if (io) {
+                if (privatePin) {
+                    io.to(`user_${userId}`).emit('chat:pinned', { conversationId: convId, messageId, pinned });
+                } else {
+                    io.to(`chat_${convId}`).emit('chat:pinned', { conversationId: convId, messageId, pinned });
+                }
+            }
             res.json({ success: true, pinned });
         } catch (error) {
             console.error('[Chat] pinMessage error:', error);
@@ -365,9 +386,10 @@ export class ChatController {
     // GET /node/api/chats/:id/pin
     static async getPinnedMessage(req: AuthRequest, res: Response): Promise<void> {
         try {
+            const userId = toInt(req.user!.id)!;
             const convId = toInt(req.params.id);
             if (!convId) return void res.status(400).json({ error: 'Invalid request' });
-            const pinned = await ChatDbService.getPinnedMessage(convId);
+            const pinned = await ChatDbService.getPinnedMessage(convId, userId);
             res.json({ success: true, pinned });
         } catch (error) {
             console.error('[Chat] getPinnedMessage error:', error);
@@ -376,17 +398,20 @@ export class ChatController {
     }
 
     // DELETE /node/api/chats/:id/clear
+    // "Clear chat" only wipes the history for the CALLER (WhatsApp "Clear
+    // messages for me") - other members keep the full conversation.
     static async clearChat(req: AuthRequest, res: Response): Promise<void> {
         try {
             const userId = toInt(req.user!.id)!;
             const convId = toInt(req.params.id);
             if (!convId) return void res.status(400).json({ error: 'Invalid request' });
-            if (!(await ChatDbService.isMember(convId, userId))) {
+            // Former members may still clear their leftover chat ("delete for me").
+            if (!(await ChatDbService.hasMembershipRecord(convId, userId))) {
                 return void res.status(403).json({ error: 'You are not a member of this conversation' });
             }
-            await ChatDbService.clearChat(convId);
+            await ChatDbService.clearChatForUser(convId, userId);
             const io = getIo(req);
-            if (io) io.to(`chat_${convId}`).emit('chat:cleared', { conversationId: convId });
+            if (io) io.to(`user_${userId}`).emit('chat:cleared', { conversationId: convId });
             res.json({ success: true, conversationId: convId });
         } catch (error) {
             console.error('[Chat] clearChat error:', error);
@@ -397,11 +422,14 @@ export class ChatController {
     // GET /node/api/chats/:id/search?q=...
     static async searchMessages(req: AuthRequest, res: Response): Promise<void> {
         try {
+            const userId = toInt(req.user!.id)!;
             const convId = toInt(req.params.id);
             const q = (req.query.q as string) || '';
             if (!convId) return void res.status(400).json({ error: 'Invalid request' });
-            const messages = await ChatDbService.searchMessagesInConversation(convId, q);
-            res.json({ success: true, messages });
+            if (!(await ChatDbService.hasMembershipRecord(convId, userId))) {
+                return void res.status(403).json({ error: 'You are not a member of this conversation' });
+            }
+            const messages = await ChatDbService.searchMessagesInConversation(convId, q, 100, userId);
         } catch (error) {
             console.error('[Chat] searchMessages error:', error);
             res.status(500).json({ error: 'Failed to search messages' });
@@ -624,8 +652,13 @@ export class ChatController {
                 message_type: original.message_type || 'text',
                 content: original.content || null,
                 attachment_url: original.attachment_url || null,
-                attachment_name: original.attachment_name || null
+                attachment_name: original.attachment_name || null,
+                attachment_size: original.attachment_size || null,
+                attachment_type: original.attachment_type || null
             });
+            // Forwarding into a conversation behaves like sending there: re-surface
+            // it for members who had soft-deleted (hidden) it.
+            await ChatDbService.unhideForNewMessage(targetId, userId).catch(() => { });
             const senders = await ChatDbService.getUsersByIds([userId]);
             const sender = senders && senders.length > 0 ? senders[0] : null;
             const payload = {
@@ -638,6 +671,8 @@ export class ChatController {
                 content: original.content || null,
                 attachment_url: original.attachment_url || null,
                 attachment_name: original.attachment_name || null,
+                attachment_size: original.attachment_size || null,
+                attachment_type: original.attachment_type || null,
                 forwarded_from: {
                     sender_name: (original.sender_name || '').trim() || null
                 },
@@ -648,7 +683,9 @@ export class ChatController {
             const io = getIo(req);
             if (io) {
                 io.to(`chat_${targetId}`).emit('chat:message', payload);
-                await broadcastToUserRooms(io, targetId, 'chat:message', payload, userId);
+                // Include the forwarder so their own conversation-list preview
+                // updates too (send/forward are not necessarily in chat_<targetId>).
+                await broadcastToUserRooms(io, targetId, 'chat:message', payload, undefined);
             }
             res.json({ success: true, message: payload });
         } catch (error) {
@@ -770,6 +807,14 @@ export class ChatController {
                 // leaving the conversation
                 await ChatDbService.removeMember(convId, userId);
                 await ChatDbService.addGroupHistory(convId, userId, 'member_removed', `left the group`).catch(() => { });
+                await ChatController.broadcastLeftSystemMessage(convId, userId, getIo(req), 'left').catch(() => { });
+                // Drop the leaver's sockets from the conversation room so they stop
+                // receiving live messages immediately (not just after a refresh).
+                await evictUserFromChatRooms(getIo(req), userId);
+                // Tell the leaver's other open clients right away (their UI still
+                // shows a working composer until it learns about the leave).
+                const io = getIo(req);
+                if (io) io.to(`user_${userId}`).emit('chat:member-removed', { conversationId: convId, userId });
                 return void res.json({ success: true, left: true });
             }
 
@@ -784,14 +829,77 @@ export class ChatController {
                 return void res.status(403).json({ error: 'Only the owner can remove admins' });
             }
             await ChatDbService.removeMember(convId, targetId);
+            // Kick the removed user's sockets out of the conversation room FIRST so
+            // they stop receiving live messages immediately (not just after refresh).
+            await evictUserFromChatRooms(getIo(req), targetId);
             const removedTargets = await ChatDbService.getUsersByIds([targetId]).catch(() => []);
             const removedTargetName = removedTargets?.[0]?.full_name || null;
             await ChatDbService.addGroupHistory(convId, userId, 'member_removed', removedTargetName ? `removed ${removedTargetName}` : `removed a member`).catch(() => { });
+            await ChatController.broadcastLeftSystemMessage(convId, targetId, getIo(req), 'removed', userId).catch(() => { });
+            // Tell the removed user (and remaining members) immediately so the
+            // removed client swaps its composer for a "no longer in group" banner
+            // without waiting for a refresh.
+            const io = getIo(req);
+            if (io) {
+                io.to(`user_${targetId}`).emit('chat:member-removed', { conversationId: convId, userId: targetId });
+                io.to(`chat_${convId}`).emit('chat:member-removed', { conversationId: convId, userId: targetId });
+            }
             const members = await ChatDbService.getMembers(convId);
             res.json({ success: true, members });
         } catch (error) {
             console.error('[Chat] removeMember error:', error);
             res.status(500).json({ error: 'Failed to remove member' });
+        }
+    }
+
+    /**
+     * Persist a system message in the group stream when a member leaves or is
+     * removed, and broadcast it like a normal message so every member sees
+     * "<Name> left" with the time inside the chat (WhatsApp behaviour).
+     */
+    static async broadcastLeftSystemMessage(convId: number, userId: number, io: Server | undefined, action: 'left' | 'removed', actorId?: number): Promise<void> {
+        if (!io) return;
+        try {
+            const users = await ChatDbService.getUsersByIds([userId]).catch(() => []);
+            const name = users?.[0]?.full_name || 'Someone';
+            let text: string;
+            if (action === 'left') {
+                text = `${name} left the group`;
+            } else if (actorId) {
+                const actors = await ChatDbService.getUsersByIds([actorId]).catch(() => []);
+                const actorName = actors?.[0]?.full_name || 'an admin';
+                text = `${name} was removed by ${actorName}`;
+            } else {
+                text = `${name} was removed`;
+            }
+            const saved = await ChatDbService.saveSystemMessage(convId, userId, text);
+            const payload = {
+                id: saved.id,
+                conversation_id: convId,
+                sender_id: userId,
+                sender_name: name,
+                sender_avatar: null as string | null,
+                message_type: 'system',
+                is_system: true,
+                content: text,
+                attachment_url: null,
+                attachment_name: null,
+                attachment_size: null,
+                attachment_type: null,
+                reply_to: null,
+                reactions: [] as any[],
+                is_read: false,
+                created_at: saved.created_at
+            };
+            io.to(`chat_${convId}`).emit('chat:message', payload);
+            const members = await ChatDbService.getMembers(convId).catch(() => []);
+            for (const m of members) {
+                const mid = toInt(m.user_id);
+                // Former members (left_at stamped) no longer receive messages.
+                if (mid && !(m as any).left_at) io.to(`user_${mid}`).emit('chat:message', payload);
+            }
+        } catch (e) {
+            console.error('[Chat] system message error:', e);
         }
     }
 
@@ -858,6 +966,8 @@ export class ChatController {
                         if (mid && mid !== userId) {
                             io.to(`user_${mid}`).emit('chat:deleted', { conversationId: convId });
                         }
+                        // Group is gone: drop everyone's sockets from its room.
+                        if (mid) await evictUserFromChatRooms(io, mid);
                     }
                 }
                 return void res.json({ success: true, deleted: true });
@@ -869,9 +979,15 @@ export class ChatController {
                 return void res.json({ success: true, hidden: true, hardDeleted: result.hardDeleted });
             }
 
-            // Non-owner leaving a group: remove member
+            // Non-owner leaving a group: remove member + show "X left" in the stream
             await ChatDbService.removeMember(convId, userId);
             await ChatDbService.addGroupHistory(convId, userId, 'member_removed', `left the group`).catch(() => { });
+            await ChatController.broadcastLeftSystemMessage(convId, userId, getIo(req), 'left').catch(() => { });
+            // Drop the leaver's sockets from the conversation room so they stop
+            // receiving live messages immediately (not just after a refresh).
+            await evictUserFromChatRooms(getIo(req), userId);
+            const ioLeave = getIo(req);
+            if (ioLeave) ioLeave.to(`user_${userId}`).emit('chat:member-removed', { conversationId: convId, userId });
             res.json({ success: true, left: true });
         } catch (error) {
             console.error('[Chat] leaveConversation error:', error);
@@ -890,7 +1006,11 @@ export class ChatController {
             if (!conversation) return void res.status(404).json({ error: 'Conversation not found' });
 
             const myRole = await ChatDbService.getMemberRole(convId, userId);
-            if (!myRole) return void res.status(403).json({ error: 'You are not a member' });
+            // getMemberRole excludes former members — they may still hide/delete
+            // their leftover chat, just not delete it for everyone.
+            if (!myRole && !(await ChatDbService.hasMembershipRecord(convId, userId))) {
+                return void res.status(403).json({ error: 'You are not a member' });
+            }
 
             // Owner of a group = hard delete for everyone
             if (myRole === 'owner' && conversation.conversation_type === 'group') {
@@ -903,12 +1023,21 @@ export class ChatController {
                         if (mid && mid !== userId) {
                             io.to(`user_${mid}`).emit('chat:deleted', { conversationId: convId });
                         }
+                        // Group is gone: drop everyone's sockets from its room.
+                        if (mid) await evictUserFromChatRooms(io, mid);
                     }
                 }
                 return void res.json({ success: true, deleted: true });
             }
 
-            // Everyone else: soft-delete for current user only
+            // Everyone else: soft-delete for current user only. For DMs this is
+            // WhatsApp-style "delete chat": the conversation disappears AND the
+            // previous history is cleared for this user only (the other person
+            // keeps everything). It re-appears with an empty thread when a new
+            // message arrives.
+            if (conversation.conversation_type === 'dm') {
+                await ChatDbService.clearChatForUser(convId, userId);
+            }
             const result = await ChatDbService.hideConversationForUser(convId, userId);
             res.json({ success: true, hidden: true, hardDeleted: result.hardDeleted });
         } catch (error) {

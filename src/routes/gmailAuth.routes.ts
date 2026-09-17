@@ -9,8 +9,22 @@ const SESSION_SECRET = process.env.SESSION_SECRET || 'dev-secret-change-in-produ
 
 const getFrontendUrl = () => (process.env.FRONTEND_URL || 'http://localhost:4200').replace(/\/+$/, '');
 
-const redirectToFrontend = (res: Response, query: string) => {
-  const url = `${getFrontendUrl()}/#/user/email?${query}`;
+const sanitizeRedirectOrigin = (origin: string | undefined): string | null => {
+  if (!origin) return null;
+  try {
+    const url = new URL(origin);
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') return null;
+    if (url.pathname !== '/' && url.pathname !== '') return null;
+    if (url.search || url.hash) return null;
+    return url.origin;
+  } catch {
+    return null;
+  }
+};
+
+const redirectToFrontend = (res: Response, query: string, redirectOrigin?: string) => {
+  const origin = sanitizeRedirectOrigin(redirectOrigin) || getFrontendUrl();
+  const url = `${origin}/#/user/email?${query}`;
   console.log('[GmailAuth] Redirecting to frontend:', url);
   return res.redirect(url);
 };
@@ -22,7 +36,7 @@ router.get('/google', (req, res) => {
       return res.status(400).json({ error: 'cuserid is required' });
     }
 
-    const state = jwt.sign({ uid: userId }, SESSION_SECRET, { expiresIn: '10m' });
+    const state = jwt.sign({ uid: userId, redirect: sanitizeRedirectOrigin(req.headers.origin) || undefined }, SESSION_SECRET, { expiresIn: '10m' });
     const url = authService.getAuthUrl(state);
     console.log('[GmailAuth] Generated OAuth URL for user:', userId);
     res.json({ url });
@@ -39,23 +53,25 @@ router.get('/google/callback', async (req, res: Response) => {
 
   console.log('[GmailAuth] Callback hit - query:', JSON.stringify({ code: code ? 'present' : 'missing', state: state ? 'present' : 'missing', error: errorParam }));
 
+  let userId = '';
+  let redirectOrigin = '';
+  if (state) {
+    try {
+      const decoded = jwt.verify(state, SESSION_SECRET) as { uid: string; redirect?: string };
+      userId = decoded.uid;
+      redirectOrigin = sanitizeRedirectOrigin(decoded.redirect) || '';
+    } catch {
+      console.error('[GmailAuth] Invalid or expired state token');
+    }
+  }
+
   if (errorParam) {
     console.error('[GmailAuth] OAuth error from Google:', errorParam);
-    return redirectToFrontend(res, `auth=error&message=${encodeURIComponent(errorParam)}`);
+    return redirectToFrontend(res, `auth=error&message=${encodeURIComponent(errorParam)}`, redirectOrigin);
   }
 
   if (!code) {
     return res.status(400).json({ error: 'Authorization code is required' });
-  }
-
-  let userId = '';
-  if (state) {
-    try {
-      const decoded = jwt.verify(state, SESSION_SECRET) as { uid: string };
-      userId = decoded.uid;
-    } catch {
-      console.error('[GmailAuth] Invalid or expired state token');
-    }
   }
 
   try {
@@ -72,10 +88,10 @@ router.get('/google/callback', async (req, res: Response) => {
       setGmailUserCookie(res, userId);
     }
 
-    redirectToFrontend(res, 'auth=success');
+    redirectToFrontend(res, 'auth=success', redirectOrigin);
   } catch (error: any) {
     console.error('[GmailAuth] OAuth callback error:', error.message);
-    redirectToFrontend(res, `auth=error&message=${encodeURIComponent(error.message)}`);
+    redirectToFrontend(res, `auth=error&message=${encodeURIComponent(error.message)}`, redirectOrigin);
   }
 });
 

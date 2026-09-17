@@ -27,6 +27,36 @@ async function getUserIdFromSocket(socket: Socket): Promise<number | undefined> 
 // test client, etc.) doesn't mark a still-connected user as offline.
 const userConnections = new Map<number, number>();
 
+/**
+ * Evict every open socket of a user from all `chat_<id>` conversation rooms.
+ *
+ * Socket.IO rooms are sticky: when someone leaves or is removed from a group,
+ * their sockets otherwise stay in `chat_<id>` and keep receiving live message
+ * broadcasts until the next reconnect/refresh. Call this right after the
+ * membership row is stamped with left_at so the removal takes effect
+ * immediately.
+ */
+export async function evictUserFromChatRooms(io: Server | undefined, userId: number): Promise<void> {
+    if (!io) return;
+    try {
+        // Real Socket instances (main namespace) — fetchSockets() returns remote
+        // proxies whose leave() does nothing, so resolve ids then look them up.
+        const ids = await io.in(`user_${userId}`).allSockets();
+        for (const id of ids) {
+            const s = io.sockets?.sockets?.get(id);
+            if (!s) continue;
+            for (const room of s.rooms) {
+                if (typeof room === 'string' && room.startsWith('chat_')) {
+                    s.leave(room);
+                }
+            }
+        }
+        console.log(`[ChatSocket] evicted user ${userId} from chat rooms`);
+    } catch (err) {
+        console.error('[ChatSocket] evict error:', err);
+    }
+}
+
 export function registerChatSocketHandlers(io: Server): void {
 
     io.on('connection', async (socket: Socket) => {
@@ -165,7 +195,8 @@ export function registerChatSocketHandlers(io: Server): void {
                 const members = await ChatDbService.getMembers(convId).catch(() => []);
                 for (const m of members) {
                     const mid = toInt(m.user_id);
-                    if (mid && mid !== uId) io.to(`user_${mid}`).emit('chat:message', payload);
+                    // Former members (left_at stamped) no longer receive messages.
+                    if (mid && mid !== uId && !(m as any).left_at) io.to(`user_${mid}`).emit('chat:message', payload);
                 }
 
                 // Toolbar notifications for members who are not viewing this chat.
@@ -232,13 +263,21 @@ export function registerChatSocketHandlers(io: Server): void {
                 const msg = await ChatDbService.getMessageById(messageId);
                 if (!msg || msg.conversation_id !== convId || toInt(msg.sender_id) !== uId) return;
                 await ChatDbService.deleteMessage(messageId);
-                io.to(`chat_${convId}`).emit('chat:message-deleted', { conversationId: convId, messageId });
+                const payload = { conversationId: convId, messageId };
+                io.to(`chat_${convId}`).emit('chat:message-deleted', payload);
+                const members = await ChatDbService.getMembers(convId).catch(() => []);
+                for (const m of members) {
+                    const mid = toInt(m.user_id);
+                    if (mid) io.to(`user_${mid}`).emit('chat:message-deleted', payload);
+                }
             } catch (err) {
                 console.error('[ChatSocket] delete error:', err);
             }
         });
 
         // PIN / UNPIN A MESSAGE
+        // DM pins are PRIVATE (stored per user); group pins are shared by all
+        // members, so only the room receives those.
         socket.on('chat:pin', async (data: { conversationId: number; messageId: number | null }) => {
             const uId = await getUserIdFromSocket(socket);
             const convId = toInt(data?.conversationId);
@@ -247,23 +286,36 @@ export function registerChatSocketHandlers(io: Server): void {
             try {
                 if (!(await ChatDbService.isMember(convId, uId))) return;
                 if (messageId && !(await ChatDbService.isMessageInConversation(messageId, convId))) return;
-                await ChatDbService.pinMessage(convId, messageId);
-                const pinned = await ChatDbService.getPinnedMessage(convId);
-                io.to(`chat_${convId}`).emit('chat:pinned', { conversationId: convId, messageId, pinned });
+                const privatePin = await ChatDbService.hasPrivatePin(convId);
+                if (privatePin) {
+                    await ChatDbService.setUserPin(uId, convId, messageId);
+                } else {
+                    await ChatDbService.pinMessage(convId, messageId);
+                }
+                const pinned = privatePin
+                    ? await ChatDbService.getUserPin(uId, convId)
+                    : await ChatDbService.getPinnedMessage(convId);
+                const payload = { conversationId: convId, messageId, pinned };
+                if (privatePin) {
+                    io.to(`user_${uId}`).emit('chat:pinned', payload);
+                } else {
+                    io.to(`chat_${convId}`).emit('chat:pinned', payload);
+                }
             } catch (err) {
                 console.error('[ChatSocket] pin error:', err);
             }
         });
 
-        // CLEAR CHAT
+        // CLEAR CHAT — per user (WhatsApp "clear for me"): other members keep
+        // the conversation, only the caller's view is emptied from now on.
         socket.on('chat:clear', async (data: { conversationId: number }) => {
             const uId = await getUserIdFromSocket(socket);
             const convId = toInt(data?.conversationId);
             if (!uId || !convId) return;
             try {
                 if (!(await ChatDbService.isMember(convId, uId))) return;
-                await ChatDbService.clearChat(convId);
-                io.to(`chat_${convId}`).emit('chat:cleared', { conversationId: convId });
+                await ChatDbService.clearChatForUser(convId, uId);
+                io.to(`user_${uId}`).emit('chat:cleared', { conversationId: convId });
             } catch (err) {
                 console.error('[ChatSocket] clear error:', err);
             }
@@ -292,7 +344,7 @@ export function registerChatSocketHandlers(io: Server): void {
             const members = await ChatDbService.getMembers(convId).catch(() => []);
             for (const m of members) {
                 const mid = toInt(m.user_id);
-                if (mid && mid !== uId) io.to(`user_${mid}`).emit('chat:typing', payload);
+                if (mid && mid !== uId && !(m as any).left_at) io.to(`user_${mid}`).emit('chat:typing', payload);
             }
         });
 

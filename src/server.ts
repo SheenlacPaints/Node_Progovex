@@ -59,9 +59,17 @@ const allowedOrigins = [
     'http://192.168.6.88:4200'
 ];
 
+// Private-network origins (phone/laptop testing on the LAN) are allowed generically
+// — a hardcoded IP list breaks every time DHCP hands out a new address or another
+// device joins the meeting from the LAN. Private ranges are unreachable from the
+// internet, so this does not widen the public attack surface.
+const PRIVATE_LAN_ORIGIN = /^https?:\/\/(localhost|127\.0\.0\.1|\[::1\]|192\.168\.\d{1,3}\.\d{1,3}|10\.\d{1,3}\.\d{1,3}\.\d{1,3}|172\.(1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3})(:\d+)?$/;
+const isAllowedOrigin = (origin: string | undefined): boolean =>
+    !origin || allowedOrigins.indexOf(origin) !== -1 || PRIVATE_LAN_ORIGIN.test(origin);
+
 const corsOptions = {
     origin: function (origin: string | undefined, callback: (err: Error | null, allow?: boolean) => void) {
-        if (!origin || allowedOrigins.indexOf(origin) !== -1) {
+        if (isAllowedOrigin(origin)) {
             return callback(null, true);
         }
         console.log('[CORS] Blocked origin:', origin, '| Allowed:', JSON.stringify(allowedOrigins));
@@ -89,7 +97,7 @@ const corsOptions = {
 const io = new Server(server, {
     cors: {
         origin: function (origin: string | undefined, callback: (err: Error | null, allow?: boolean) => void) {
-            if (!origin || allowedOrigins.indexOf(origin) !== -1) {
+            if (isAllowedOrigin(origin)) {
                 return callback(null, true);
             }
             console.log('[SocketIO CORS] Blocked origin:', JSON.stringify(origin));
