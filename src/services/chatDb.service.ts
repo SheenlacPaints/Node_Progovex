@@ -1271,27 +1271,6 @@ export class ChatDbService {
     }
 
     /** Mark every chat notification for one conversation as read. */
-    /**
-     * Whether a user already has an UNREAD message notification in a
-     * conversation (used to throttle mobile pushes to once per unread burst).
-     * `excludeMessageId` skips the row for the message currently being
-     * delivered; rows without a message_id (e.g. "added you to the group")
-     * never suppress a message push.
-     */
-    static async hasUnreadChatNotification(userId: number, conversationId: number, excludeMessageId?: number): Promise<boolean> {
-        const rows = await executeQuery<any>(
-            `SELECT TOP 1 1 as found
-             FROM nt_chat_notifications
-             WHERE user_id = @userId
-               AND conversation_id = @conversationId
-               AND is_read = 0
-               AND message_id IS NOT NULL
-               AND (@excludeMessageId IS NULL OR message_id <> @excludeMessageId)`,
-            { userId, conversationId, excludeMessageId: excludeMessageId ?? null }
-        );
-        return !!(rows && rows.length > 0);
-    }
-
     static async markChatNotificationsRead(conversationId: number, userId: number): Promise<number> {
         const res = await executeNonQuery(
             `UPDATE nt_chat_notifications

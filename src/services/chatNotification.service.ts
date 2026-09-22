@@ -42,10 +42,10 @@ export async function pushChatNotifications(
 
         // Mobile push for OFFLINE recipients (Sheenlac Progovex gateway).
         // Fire-and-forget so a slow/unreachable gateway never delays message
-        // delivery; runs for both the socket and REST send paths. `io` is
-        // passed so the push service can check LIVE socket presence instead
-        // of the (possibly stale) DB status row.
-        pushOfflineChatNotifications(conversationId, message, toInt(senderId)!, io).catch(() => { });
+        // delivery; runs for both the socket and REST send paths. The already
+        // loaded members/conversation are passed in, so the push feature does
+        // NO database calls of its own — pure socket check + gateway API call.
+        pushOfflineChatNotifications(conversationId, message, toInt(senderId)!, io, members, conv).catch(() => { });
 
         for (const m of members) {
             const userId = toInt(m.user_id);
