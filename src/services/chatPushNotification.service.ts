@@ -1,20 +1,21 @@
 /**
- * Mobile push notifications for the chat feature.
+ * Mobile push notifications for the chat feature — PURE API CALL ONLY.
  *
- * When a message is sent and a recipient is OFFLINE (no open socket), call the
- * Progovex push API so their mobile device shows a notification:
+ * No database access at all: this service receives the member list and
+ * conversation object that the message-send path already fetched in memory,
+ * checks LIVE socket connections to find offline recipients, and calls the
+ * Progovex push gateway directly:
  *
  *   POST {PUSH_NOTIFICATION_API_URL}
  *   { "empid": "<recipient's employee id e.g. 500028>", "message": "<text>" }
  *
- * Configured via env vars:
- *   PUSH_NOTIFICATION_API_URL   full endpoint (set in .env)
- *   PUSH_NOTIFICATION_ENABLED   "true" to enable (default: true when URL is set)
- *   PUSH_NOTIFICATION_TIMEOUT_MS  request timeout (default 5000)
+ * Configured via env vars (set in .env):
+ *   PUSH_NOTIFICATION_API_URL       full endpoint URL
+ *   PUSH_NOTIFICATION_ENABLED       "true" to enable (default: true)
+ *   PUSH_NOTIFICATION_TIMEOUT_MS    request timeout (default 5000)
  */
 
 import type { Server } from 'socket.io';
-import { ChatDbService } from './chatDb.service';
 
 const API_URL = (process.env.PUSH_NOTIFICATION_API_URL || '').trim();
 const ENABLED = (process.env.PUSH_NOTIFICATION_ENABLED || 'true').toLowerCase() !== 'false';
@@ -33,7 +34,7 @@ function buildPushText(conversation: any, senderName: string, content: string): 
         ? `${senderName} in ${convName || 'the group'}: ${content}`
         : `You have received a new message from ${senderName}: ${content}`;
     // Single string field — title and body separated for readability on device.
-    return `${body}`.slice(0, 500);
+    return `${title}\n${body}`.slice(0, 500);
 }
 
 /**
@@ -70,40 +71,37 @@ async function sendPush(empId: string, text: string): Promise<boolean> {
  * Push-notify every OFFLINE member of the conversation about a new message.
  *
  * Called from both send paths (socket `chat:send` and REST sendMessage) via
- * pushChatNotifications. Rules:
+ * pushChatNotifications, which passes in the member list and conversation it
+ * already loaded — so this does its own ZERO database queries. Rules:
  *  - sender is never notified
  *  - members who left the group (left_at) are skipped
  *  - a push fires for EVERY message delivered while the recipient is offline
  *  - "offline" means NO open socket connection — live sockets are the source
- *    of truth; the DB presence row is only a fallback because it can go stale
- *    after a server crash/kill and would then wrongly suppress pushes
+ *    of truth; the in-memory member row's is_online flag is only a fallback
+ *    when socket checks aren't possible
  */
 export async function pushOfflineChatNotifications(
     conversationId: number,
     message: any,
     senderId: number,
-    io?: Server
+    io: Server | undefined,
+    members: any[],
+    conversation: any
 ): Promise<number> {
     if (!isPushConfigured()) return 0;
     let sent = 0;
     try {
-        const members = await ChatDbService.getMembers(conversationId).catch(() => []);
-        if (!members || members.length === 0) return 0;
-
-        const conv = await ChatDbService.getConversation(conversationId).catch(() => null);
-        const senderRow = members.find(m => parseInt(m.user_id, 10) === senderId);
+        const senderRow = (members || []).find(m => parseInt(m.user_id, 10) === senderId);
         const senderName = (message?.sender_name || senderRow?.full_name || 'Someone').trim();
+        const text = buildPushText(conversation, senderName, messagePreview(message));
 
-        const text = buildPushText(conv, senderName, messagePreview(message));
-
-        for (const m of members) {
+        for (const m of members || []) {
             const userId = parseInt(m.user_id, 10);
             if (!userId || userId === senderId) continue;          // never notify the sender
             if (m.left_at) continue;                               // former members get nothing
 
             // ONLINE members see the message in-app — no mobile push needed.
-            // Live socket presence wins over the DB row (stale rows happen
-            // after server kills/crashes and must not block pushes).
+            // Live socket presence wins over the in-memory is_online flag.
             let online = !!m.is_online;
             if (io) {
                 const socks = await io.in(`user_${userId}`).fetchSockets().catch(() => null);
@@ -124,13 +122,6 @@ export async function pushOfflineChatNotifications(
         console.error('[ChatPush] pushOfflineChatNotifications error:', err);
     }
     return sent;
-}
-
-/** Small local copy to avoid a circular import with chatNotification.service. */
-function toInt(val: any): number | undefined {
-    if (val === undefined || val === null) return undefined;
-    const n = parseInt(val, 10);
-    return isNaN(n) ? undefined : n;
 }
 
 function messagePreview(msg: any): string {
