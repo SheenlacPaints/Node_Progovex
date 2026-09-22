@@ -1,5 +1,6 @@
 import { Server } from 'socket.io';
 import { ChatDbService } from './chatDb.service';
+import { pushOfflineChatNotifications } from './chatPushNotification.service';
 
 function toInt(val: any): number | undefined {
     if (val === undefined || val === null) return undefined;
@@ -38,6 +39,13 @@ export async function pushChatNotifications(
 
         // Sockets currently sitting in the conversation room = actively reading it.
         const roomSockets = io?.sockets?.adapter?.rooms?.get(`chat_${conversationId}`);
+
+        // Mobile push for OFFLINE recipients (Sheenlac Progovex gateway).
+        // Fire-and-forget so a slow/unreachable gateway never delays message
+        // delivery; runs for both the socket and REST send paths. `io` is
+        // passed so the push service can check LIVE socket presence instead
+        // of the (possibly stale) DB status row.
+        pushOfflineChatNotifications(conversationId, message, toInt(senderId)!, io).catch(() => { });
 
         for (const m of members) {
             const userId = toInt(m.user_id);
