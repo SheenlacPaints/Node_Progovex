@@ -278,6 +278,20 @@ export class ChatDbService {
                     { convId, userA }
                 );
             }
+            // Legacy seed: members created before the periods table shipped have
+            // no period rows — backfill one from the member row so period-based
+            // visibility (chat list preview, search) keeps working for them.
+            if (HAS_LEFT_AT && HAS_PERIODS) {
+                await executeNonQuery(
+                    `INSERT INTO nt_chat_member_periods (conversation_id, user_id, joined_at, left_at)
+                     SELECT m.conversation_id, m.user_id, m.joined_at, m.left_at
+                     FROM nt_chat_conversation_members m
+                     WHERE m.conversation_id = @convId
+                       AND NOT EXISTS (SELECT 1 FROM nt_chat_member_periods p
+                                       WHERE p.conversation_id = m.conversation_id AND p.user_id = m.user_id)`,
+                    { convId }
+                );
+            }
             return convId;
         }
 
@@ -293,6 +307,16 @@ export class ChatDbService {
              VALUES (@convId, @userA, 'member'), (@convId, @userB, 'member')`,
             { convId: conversationId, userA, userB }
         );
+        // Seed the open visibility period for both members so the period-based
+        // chat-list preview works from the very first message.
+        if (HAS_LEFT_AT && HAS_PERIODS) {
+            await executeNonQuery(
+                `INSERT INTO nt_chat_member_periods (conversation_id, user_id, joined_at)
+                 SELECT conversation_id, user_id, GETUTCDATE() FROM nt_chat_conversation_members
+                 WHERE conversation_id = @convId`,
+                { convId: conversationId }
+            );
+        }
         return conversationId;
     }
 
@@ -314,6 +338,16 @@ export class ChatDbService {
                 { convId: conversationId, userId, role }
             );
         }
+        // Seed the open visibility period for every founding member so the
+        // period-based chat-list preview works from the very first message.
+        if (HAS_LEFT_AT && HAS_PERIODS) {
+            await executeNonQuery(
+                `INSERT INTO nt_chat_member_periods (conversation_id, user_id, joined_at)
+                 SELECT conversation_id, user_id, GETUTCDATE() FROM nt_chat_conversation_members
+                 WHERE conversation_id = @convId`,
+                { convId: conversationId }
+            );
+        }
         return conversationId;
     }
 
@@ -333,11 +367,19 @@ export class ChatDbService {
         // Visibility window: only messages a member actually witnessed count for
         // the preview/unread. With periods, the union of the member's periods
         // is matched in SQL (JSON-free, index-friendly per-period ranges).
+        // Same legacy fallback as getMemberVisibility: a member with NO period
+        // rows (created before the periods table shipped) falls back to the
+        // member-row window joined_at→left_at, otherwise every preview comes
+        // back NULL and the sidebar shows "No messages yet".
         const win = (HAS_LEFT_AT && HAS_PERIODS)
-            ? ` AND EXISTS (SELECT 1 FROM nt_chat_member_periods p
+            ? ` AND (EXISTS (SELECT 1 FROM nt_chat_member_periods p
                            WHERE p.conversation_id = c.id AND p.user_id = me.user_id
                              AND msg.created_at >= p.joined_at
-                             AND (p.left_at IS NULL OR msg.created_at <= p.left_at))`
+                             AND (p.left_at IS NULL OR msg.created_at <= p.left_at))
+                 OR (NOT EXISTS (SELECT 1 FROM nt_chat_member_periods p2
+                                 WHERE p2.conversation_id = c.id AND p2.user_id = me.user_id)
+                     AND msg.created_at >= ISNULL(me.joined_at, '1970-01-01')
+                     AND (me.left_at IS NULL OR msg.created_at <= me.left_at)))`
             : (HAS_LEFT_AT ? ` AND msg.created_at > ISNULL(me.joined_at, '1970-01-01') AND (me.left_at IS NULL OR msg.created_at <= me.left_at)` : '');
         return executeQuery<any>(
             `SELECT
@@ -1166,11 +1208,17 @@ export class ChatDbService {
         // Search message content — restricted to the union of the user's
         // membership periods, so former members don't surface history they
         // never witnessed and re-joiners don't surface the away-gap.
+        // Legacy fallback mirrors getConversationsForUser / getMemberVisibility:
+        // members without period rows keep searching their full member-row window.
         const winFilter = (HAS_LEFT_AT && HAS_PERIODS)
-            ? ` AND EXISTS (SELECT 1 FROM nt_chat_member_periods p
+            ? ` AND (EXISTS (SELECT 1 FROM nt_chat_member_periods p
                            WHERE p.conversation_id = msg.conversation_id AND p.user_id = me.user_id
                              AND msg.created_at >= p.joined_at
-                             AND (p.left_at IS NULL OR msg.created_at <= p.left_at))`
+                             AND (p.left_at IS NULL OR msg.created_at <= p.left_at))
+                 OR (NOT EXISTS (SELECT 1 FROM nt_chat_member_periods p2
+                                 WHERE p2.conversation_id = msg.conversation_id AND p2.user_id = me.user_id)
+                     AND msg.created_at >= ISNULL(me.joined_at, '1970-01-01')
+                     AND (me.left_at IS NULL OR msg.created_at <= me.left_at)))`
             : (HAS_LEFT_AT ? ` AND msg.created_at > ISNULL(me.joined_at, '1970-01-01') AND (me.left_at IS NULL OR msg.created_at <= me.left_at)` : '');
         const msgMatches = await executeQuery<any>(
             `SELECT TOP (@limit) msg.conversation_id,
