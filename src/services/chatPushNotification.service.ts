@@ -31,10 +31,10 @@ function buildPushText(conversation: any, senderName: string, content: string): 
     const convName = (conversation?.name || '').trim();
     const title = isGroup ? `${senderName} · ${convName || 'Group chat'}` : `New Chat from ${senderName}`;
     const body = isGroup
-        ? `${senderName} in ${convName || 'the group'}: ${content}`
-        : `You have received a new message from ${senderName}: ${content}`;
+        ? `${senderName} in ${convName || 'the group'}: ~ ${content} ~`
+        : `You have received a new message from ${senderName}: ~ ${content} ~`;
     // Single string field — title and body separated for readability on device.
-    return `${title}\n${body}`.slice(0, 500);
+    return `${body}, Please check PROGOVEX CHAT for further action.`.slice(0, 500);
 }
 
 /**
