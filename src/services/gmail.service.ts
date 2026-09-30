@@ -285,17 +285,58 @@ export class GmailService {
     const isFromMe = labelIds.includes('SENT');
     const hasAttachments = labelIds.includes('HAS_ATTACHMENTS') || (msg.payload?.parts || []).length > 1;
 
-    let body = msg.snippet || '';
-    if (msg.payload?.body?.data) {
-      body = Buffer.from(msg.payload.body.data, 'base64url').toString('utf-8');
-    } else if (msg.payload?.parts) {
-      const textPart = msg.payload.parts.find((p: any) => p.mimeType === 'text/plain');
-      const htmlPart = msg.payload.parts.find((p: any) => p.mimeType === 'text/html');
-      const part = textPart || htmlPart;
-      if (part?.body?.data) {
-        body = Buffer.from(part.body.data, 'base64url').toString('utf-8');
+    // Gmail shows the HTML part when present; preferring text/plain here is
+    // what made saved images vanish and layouts shift (issue: draft images /
+    // alignment). Decode BOTH parts, collect inline (cid:) image refs, and
+    // rewrite cid: srcs to our attachment endpoint so they render.
+    const decodePart = (b: any) => (b?.data ? Buffer.from(b.data, 'base64url').toString('utf-8') : '');
+    const findPart = (parts: any[], mime: string): any => {
+      for (const p of parts || []) {
+        if (p.mimeType === mime && p.body?.data) return p;
+        const deep = findPart(p.parts, mime);
+        if (deep) return deep;
       }
+      return null;
+    };
+    let bodyText = msg.snippet || '';
+    let bodyHtml = '';
+    if (msg.payload?.body?.data) {
+      const raw = decodePart(msg.payload.body);
+      if ((msg.payload.mimeType || '').toLowerCase() === 'text/html') bodyHtml = raw;
+      else bodyText = raw;
+    } else if (msg.payload?.parts) {
+      const textPart = findPart(msg.payload.parts, 'text/plain');
+      const htmlPart = findPart(msg.payload.parts, 'text/html');
+      if (textPart) bodyText = decodePart(textPart.body);
+      if (htmlPart) bodyHtml = decodePart(htmlPart.body);
     }
+
+    // content-id -> attachmentId map for cid: rewriting
+    const inlineMap = new Map<string, { id: string; filename: string }>();
+    const collectInline = (parts: any[]) => {
+      for (const part of parts || []) {
+        if (part.body?.attachmentId) {
+          const headers: any[] = part.headers || [];
+          const cid = (headers.find((h: any) => h.name.toLowerCase() === 'content-id')?.value || '')
+            .match(/<(.+?)>/)?.[1] || '';
+          if (cid) inlineMap.set(cid, { id: part.body.attachmentId, filename: part.filename || 'image' });
+        }
+        if (part.parts) collectInline(part.parts);
+      }
+    };
+    collectInline(msg.payload?.parts);
+
+    let htmlDisplay = '';
+    if (bodyHtml) {
+      htmlDisplay = bodyHtml.replace(/src=["']cid:([^"']+)["']/gi, (m: string, cid: string) => {
+        const ref = inlineMap.get(cid.trim());
+        if (!ref) return m;
+        const url = `/gmail/messages/${msg.id}/attachments/${ref.id}` +
+          `?filename=${encodeURIComponent(ref.filename)}&mode=inline`;
+        return `src="${url}"`;
+      });
+    }
+    const body = htmlDisplay || bodyText;
 
     const attachments: { filename: string; mimeType: string; size: number; attachmentId: string }[] = [];
     if (msg.payload?.parts) {
@@ -344,6 +385,8 @@ export class GmailService {
       subject: this.decodeHtmlEntities(getHeader('Subject')),
       snippet: this.decodeHtmlEntities(msg.snippet || ''),
       body,
+      bodyText,
+      bodyHtml: htmlDisplay,
       date: dateValue,
       isRead: !labelIds.includes('UNREAD'),
       isStarred: labelIds.includes('STARRED'),
