@@ -3,6 +3,7 @@ import jwt from 'jsonwebtoken';
 import { authService } from '../services/auth.service';
 import { gmailTokenDbService } from '../services/gmailTokenDb.service';
 import { GmailAuthenticatedRequest, setGmailUserCookie, clearGmailUserCookie, gmailAuthMiddleware } from '../middleware/gmailAuth.middleware';
+import { ensureFreshTokens, isReauthRequired } from '../middleware/gmailTokenRefresh.middleware';
 
 const router = Router();
 const SESSION_SECRET = process.env.SESSION_SECRET || 'dev-secret-change-in-production';
@@ -106,6 +107,24 @@ router.get('/debug-env', (req, res) => {
 
 router.get('/status', gmailAuthMiddleware, async (req: GmailAuthenticatedRequest, res: Response) => {
   try {
+    // Stored tokens alone are not proof of a working connection: the refresh
+    // token may have been revoked by Google. Every data endpoint refreshes on
+    // demand, so a stale row used to report authenticated:true while all of
+    // them failed with 401 — leaving the UI "connected" with a dead inbox and
+    // no way to reconnect. Validate freshness here so the client can show the
+    // reconnect flow instead.
+    try {
+      await ensureFreshTokens(req);
+    } catch (refreshError: any) {
+      if (isReauthRequired(refreshError)) {
+        console.error('[GmailAuth] Status: refresh token unusable, re-auth required:', refreshError.message);
+        return res.json({ authenticated: false, needsReconnect: true, reason: 'reauth_required' });
+      }
+      // Transient failure (network/Google outage): the row still exists and a
+      // later call may succeed, so keep reporting the stored connection.
+      console.error('[GmailAuth] Status: transient refresh failure:', refreshError.message);
+    }
+
     const userEmail = await gmailTokenDbService.getUserEmail(req.gmailUserId!);
     res.json({
       authenticated: true,
