@@ -8,7 +8,7 @@ import { ensureFreshTokens, isReauthRequired } from '../middleware/gmailTokenRef
 const router = Router();
 const SESSION_SECRET = process.env.SESSION_SECRET || 'dev-secret-change-in-production';
 
-const getFrontendUrl = () => (process.env.FRONTEND_URL || 'http://localhost:4200').replace(/\/+$/, '');
+const getFrontendUrl = () => (process.env.FRONTEND_URL || 'https://progovex.sheenlac.com').replace(/\/+$/, '');
 
 const sanitizeRedirectOrigin = (origin: string | undefined): string | null => {
   if (!origin) return null;
@@ -98,7 +98,7 @@ router.get('/google/callback', async (req, res: Response) => {
 
 router.get('/debug-env', (req, res) => {
   res.json({
-    FRONTEND_URL: process.env.FRONTEND_URL || 'http://localhost:4200',
+    FRONTEND_URL: process.env.FRONTEND_URL || 'https://progovex.sheenlac.com',
     GOOGLE_REDIRECT_URI: process.env.GOOGLE_REDIRECT_URI || 'NOT SET',
     NODE_ENV: process.env.NODE_ENV || 'development',
     processCwd: process.cwd(),
