@@ -1,0 +1,19 @@
+# ── Meeting media server (mediasoup SFU) ── copy these into your .env
+# PUBLIC IP of this server (what browsers connect to). REQUIRED in production.
+MEDIASOUP_ANNOUNCED_IP=203.0.113.10
+# Bind address for media sockets
+MEDIASOUP_LISTEN_IP=0.0.0.0
+# First media port. Worker N uses port (MEDIASOUP_PORT + N) for UDP AND TCP.
+# Open MEDIASOUP_PORT .. MEDIASOUP_PORT + (workers-1) in the firewall / security group.
+MEDIASOUP_PORT=40000
+# Workers = CPU cores used for media (default: all cores)
+# MEDIASOUP_NUM_WORKERS=4
+# Peers per router before a meeting spreads onto another CPU core
+MEDIASOUP_MAX_PEERS_PER_ROUTER=40
+# Hard cap of participants per meeting
+MEETING_MAX_PARTICIPANTS=300
+# Optional TURN relay (for networks that block everything except 443)
+# TURN_HOST=turn.example.com
+# TURN_USER=user
+# TURN_PASSWORD=secret
+# TURN_TLS_PORT=443

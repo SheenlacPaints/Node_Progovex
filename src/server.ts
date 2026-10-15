@@ -33,7 +33,7 @@ import meetingUploadRoutes from './routes/meetingUpload.routes';
 import chatRoutes from './routes/chatRoutes';
 import { MeetingDbService } from './services/meetingDb.service';
 import { ChatDbService } from './services/chatDb.service';
-import { registerMeetingSocketHandlers } from './sockets/meetingSocketHandler';
+import { registerMeetingSocketHandlers, getMeetingServerStats } from './sockets/meetingSocketHandler';
 import { registerChatSocketHandlers } from './sockets/chatSocketHandler';
 
 const app = express();
@@ -257,6 +257,11 @@ app.get('/socket-health', (req: Request, res: Response) => {
         connections: io.engine.clientsCount,
         message: 'Socket.IO server is running'
     });
+});
+
+// Media server (mediasoup SFU) status: workers, rooms and participants per meeting.
+app.get('/meeting-health', (req: Request, res: Response) => {
+    res.json(getMeetingServerStats());
 });
 
 app.get('/', (req: Request, res: Response) => {

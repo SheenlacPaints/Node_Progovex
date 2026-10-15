@@ -43,6 +43,7 @@
         "imap": "^0.8.19",
         "jsonwebtoken": "^9.0.2",
         "mailparser": "^3.9.8",
+        "mediasoup": "^3.29.0",
         "microsoft-graph-client": "^1.0.43",
         "moment-timezone": "^0.6.2",
         "mongoose": "^7.5.0",
