@@ -4,6 +4,12 @@ import { MeetingDbService } from '../services/meetingDb.service';
 import { sendMeetingInviteEmail, formatMeetingDateTime } from '../services/mail.service';
 import { resolveUserId } from '../services/chatIdentity.service';
 
+/** Public join link. The frontend uses hash routing and the join lobby reads ?code=. */
+function meetingJoinLink(code: string): string {
+    const base = String(process.env.FRONTEND_URL || process.env.CLIENT_URL || 'http://localhost:4200').replace(/\/+$/, '');
+    return `${base}/#/meeting/join?code=${encodeURIComponent(code)}`;
+}
+
 function toInt(val: any): number | undefined {
     if (val === undefined || val === null) return undefined;
     const n = parseInt(val, 10);
@@ -40,7 +46,7 @@ export class MeetingController {
         }
 
         const hostName = meeting.host_name || req.user?.fullName || req.user?.username || 'Host';
-        const inviteLink = `${process.env.FRONTEND_URL || process.env.CLIENT_URL || 'http://localhost:4200'}/meeting/join/${meeting.meeting_code}`;
+        const inviteLink = meetingJoinLink(meeting.meeting_code);
 
         let sent = 0;
         for (const email of unique) {
@@ -113,7 +119,7 @@ export class MeetingController {
                 await this.sendInviteEmails(req, meeting, participantEmails);
             }
 
-            const inviteLink = `${process.env.FRONTEND_URL || process.env.CLIENT_URL || 'http://localhost:4200'}/meeting/join/${meeting.meeting_code}`;
+            const inviteLink = meetingJoinLink(meeting.meeting_code);
 
             res.json({
                 success: true,
@@ -428,7 +434,7 @@ export class MeetingController {
             await MeetingDbService.logMeeting(meeting.id, userId, 'invited_bulk', emails.join(','));
 
             const mailSent = await this.sendInviteEmails(req, meeting, invitedEmails);
-            const inviteLink = `${process.env.FRONTEND_URL || process.env.CLIENT_URL || 'http://localhost:4200'}/meeting/join/${meeting.meeting_code}`;
+            const inviteLink = meetingJoinLink(meeting.meeting_code);
 
             res.json({ success: true, invited, mails_sent: mailSent, invite_link: inviteLink });
         } catch (error: any) {
@@ -499,7 +505,7 @@ export class MeetingController {
             }
 
             await MeetingDbService.logMeeting(meeting.id, userId, 'scheduled');
-            const inviteLink = `${process.env.FRONTEND_URL || process.env.CLIENT_URL || 'http://localhost:4200'}/meeting/join/${meeting.meeting_code}`;
+            const inviteLink = meetingJoinLink(meeting.meeting_code);
 
             res.json({
                 success: true,
